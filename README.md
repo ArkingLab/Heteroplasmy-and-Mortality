@@ -5,3 +5,4 @@ MitoHPC:
 
 Mito score:
 
+UKB_generatefiles.R: This script contains R codes for filtering heteroplasmic variants and generating useful files for analysis.
