@@ -1,0 +1,1072 @@
+---
+title: "UKB - Heteroplasmy and mortality - data analysis"
+subtitle: "004 - Mito score sum and cancer - Figure 7"
+author: "Yun Soo Hong"
+date: '`r format(Sys.Date(), "%B %d, %Y")`'
+output: 
+  html_document:
+    toc: true
+    toc_float: 
+      collapsed: false
+      smooth_scroll: false
+    pandoc_args: [
+    "--number-sections",
+    "--number-offset=0"
+    ]
+fontsize: 11pt
+---
+
+# Set up  
+
+## Program description  
+* This program reads in the final data set to provide analysis for mitoscore sum (MSS) and cancer and generates Figure 7.     
+  * Step 1: Read in data 
+  * Step 2: Prevalent cancer     
+  * Step 3: Incident cancer  
+  * Step 4: Mortality in prevalent or incident cancer  
+  
+## Versions of R and packages  
+```{r analysis_04 set up, include = FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Load libraries
+```{r analysis_04 load libraries, echo = TRUE, message = FALSE}
+library(tidyverse)
+library(magrittr)
+library(lubridate)
+library(data.table)
+library(rms)
+library(RColorBrewer)
+library(survival)
+library(gtsummary)
+library(survminer)
+library(RStata)
+```
+
+## Print out settings  
+```{r analysis_04 print settings}
+options(tibble.print_max = 100)
+options(pillar.sigfig = 5)
+
+# chooseStataBin()
+options("RStata.StataPath" = "\"C:\\Program Files\\Stata16\\StataMP-64\"")
+options("RStata.StataVersion" = 16)
+```
+
+# Load data  
+```{r analysis_04 load data}
+ukb <- readRDS("../data_cleaning/ukb_heteroplasmy_mortality_v1.rds")
+```
+
+# Case definitions for prevalent disease  
+```{r analysis_04 case prev}
+ukb %<>%
+  mutate(
+    prev_cancer_resp = ifelse(cancer_dx_resp == 1 & cancer_date_resp < dov, 1, 0),
+    prev_cancer_breast = ifelse(cancer_dx_breast == 1 & cancer_date_breast < dov, 1, 0), 
+    prev_cancer_hemato_lymphoma = ifelse(cancer_dx_hemato_lymphoma == 1 & cancer_date_hemato_lymphoma < dov, 1, 0),
+    prev_cancer_hemato_leukemia = ifelse(cancer_dx_hemato_leukemia == 1 & cancer_date_hemato_leukemia < dov, 1, 0)
+    ) 
+
+ukb %<>%
+  mutate(
+    time_prev_resp = as.numeric((cancer_date_resp - dov)/365.25),
+    time_prev_breast = as.numeric((cancer_date_breast - dov)/365.25),
+    time_prev_hemato_lymphoma = as.numeric((cancer_date_hemato_lymphoma - dov)/365.25),
+    time_prev_hemato_leukemia = as.numeric((cancer_date_hemato_leukemia - dov)/365.25)
+  )
+```
+
+# Case definitions for incident disease  
+```{r analysis_04 case inc}
+ukb %<>%
+  mutate(
+    inc_cancer_resp = ifelse(cancer_dx_resp == 1 & cancer_date_resp >= dov, 1, 0),
+    inc_cancer_breast = ifelse(cancer_dx_breast == 1 & cancer_date_breast >= dov, 1, 0), 
+    inc_cancer_hemato_lymphoma = ifelse(cancer_dx_hemato_lymphoma == 1 & cancer_date_hemato_lymphoma >= dov, 1, 0),
+    inc_cancer_hemato_leukemia = ifelse(cancer_dx_hemato_leukemia == 1 & cancer_date_hemato_leukemia >= dov, 1, 0)
+  ) 
+
+ukb %<>%
+  mutate(
+    time_inc_resp = as.numeric((cancer_date_resp - dov)/365.25),
+    time_inc_breast = as.numeric((cancer_date_breast - dov)/365.25),
+    time_inc_hemato_lymphoma = as.numeric((cancer_date_hemato_lymphoma - dov)/365.25),
+    time_inc_hemato_leukemia = as.numeric((cancer_date_hemato_leukemia - dov)/365.25)
+  ) 
+``` 
+
+# Indicator variable for prevalent/incident cancer  
+```{r analysis_04 prev inc}
+ukb %<>%
+  mutate(
+    prev_inc_resp = 
+      case_when(
+        prev_cancer_resp == 1 ~ 0,
+        inc_cancer_resp == 1 ~ 1
+      ),
+    prev_inc_breast = 
+      case_when(
+        prev_cancer_breast == 1 ~ 0, 
+        inc_cancer_breast == 1 ~ 1
+      ),
+    prev_inc_hemato_lymphoma = 
+      case_when(
+        prev_cancer_hemato_lymphoma == 1 ~ 0,
+        inc_cancer_hemato_lymphoma == 1 ~ 1
+      ),
+    prev_inc_hemato_leukemia = 
+      case_when(
+        prev_cancer_hemato_leukemia == 1 ~ 0,
+        inc_cancer_hemato_leukemia == 1 ~ 1
+      )
+  ) 
+```
+
+# Prevalent cancer  
+## Table of events  
+```{r analysis_04 prev_table}
+ukb_prev <- ukb %>%
+  filter(!is.na(smk_na) & !is.na(alc_na) & !is.na(bmi) & !is.na(wbc) & !is.na(hap))
+
+prev_table <- 
+  apply(ukb_prev[c("prev_cancer_resp", "prev_cancer_breast", "prev_cancer_hemato_lymphoma", "prev_cancer_hemato_leukemia")], 2, table) %>%
+  t() %>%
+  as.data.frame() %>%
+  rownames_to_column("Cancer type") %>%
+  mutate(
+    `Cancer type` = case_when(
+      `Cancer type` == "prev_cancer_resp" ~ "Lung", 
+      `Cancer type` == "prev_cancer_breast" ~ "Breast",
+      `Cancer type` == "prev_cancer_hemato_lymphoma" ~ "Lymphoma", 
+      `Cancer type` == "prev_cancer_hemato_leukemia" ~ "Leukemia"
+    )
+  ) %>%
+  rename(Events = `1`) %>%
+  select(`Cancer type`, Events)
+prev_table
+```
+
+## By type of cancer  
+### Malignant neoplasms of respiratory and intrathoracic organs  
+```{r analysis_04 prev_lung}
+model <- prev_cancer_resp ~ mito_score_sum_lc + center + rcs(age, df= 4) + sex + smk + alc + bmi + wbc + hap 
+lr_cancer_resp <- glm(model, 
+                      family = binomial, 
+                      data = ukb_prev) 
+
+# marginal prevalence 
+mp_cancer_resp <- summary(prediction::prediction(lr_cancer_resp, 
+                                                 at = list(mito_score_sum_lc = c(0, 1))))
+mp_cancer_resp
+
+# prevalence ratio
+pr_cancer_resp <- mp_cancer_resp$Prediction[2]/mp_cancer_resp$Prediction[1]
+pr_cancer_resp
+
+# 95% confidence interval using delta method 
+var_cancer_resp_ref <- (mp_cancer_resp$SE[1]^2)/(mp_cancer_resp$Prediction[1]^2)
+var_cancer_resp_comp <- (mp_cancer_resp$SE[2]^2)/(mp_cancer_resp$Prediction[2]^2)
+se_logpr_mito_score_sum_lc <- sqrt(var_cancer_resp_ref + var_cancer_resp_comp)
+
+pr_cancer_resp_lci <- exp(log(pr_cancer_resp) - 1.96*se_logpr_mito_score_sum_lc)
+pr_cancer_resp_uci <- exp(log(pr_cancer_resp) + 1.96*se_logpr_mito_score_sum_lc)
+
+prev_lung <- c(pr_cancer_resp, pr_cancer_resp_lci, pr_cancer_resp_uci)
+prev_lung
+```
+
+### Malignant neoplasm of breast  
+```{r analysis_04 prev_breast}
+model <- prev_cancer_breast ~ mito_score_sum_lc + center + rcs(age, df= 4) + smk + alc + bmi + wbc + hap
+lr_cancer_breast <- glm(model, 
+                        family = binomial, 
+                        data = ukb_prev,
+                        subset = sex == "women") 
+
+# marginal prevalence 
+mp_cancer_breast <- summary(prediction::prediction(lr_cancer_breast,
+                                                   at = list(mito_score_sum_lc = c(0, 1))))
+mp_cancer_breast
+
+# prevalence ratio
+pr_cancer_breast <- mp_cancer_breast$Prediction[2]/mp_cancer_breast$Prediction[1]
+pr_cancer_breast
+
+# 95% confidence interval using delta method 
+var_cancer_breast_ref <- (mp_cancer_breast$SE[1]^2)/(mp_cancer_breast$Prediction[1]^2)
+var_cancer_breast_comp <- (mp_cancer_breast$SE[2]^2)/(mp_cancer_breast$Prediction[2]^2)
+se_logpr_mito_score_sum_lc <- sqrt(var_cancer_breast_ref + var_cancer_breast_comp)
+
+pr_cancer_breast_lci <- exp(log(pr_cancer_breast) - 1.96*se_logpr_mito_score_sum_lc)
+pr_cancer_breast_uci <- exp(log(pr_cancer_breast) + 1.96*se_logpr_mito_score_sum_lc)
+
+prev_breast <- c(pr_cancer_breast, pr_cancer_breast_lci, pr_cancer_breast_uci)
+prev_breast
+```
+
+### Lymphomas    
+```{r analysis_04 prev_lymphoma}
+model <- prev_cancer_hemato_lymphoma ~ mito_score_sum_lc + center + rcs(age, df= 4) + sex + smk + alc + bmi + wbc + hap
+lr_cancer_hemato_lymphoma <- glm(model, 
+                                 family = binomial,
+                                 data = ukb_prev) 
+
+# marginal prevalence 
+mp_cancer_hemato_lymphoma <- summary(prediction::prediction(lr_cancer_hemato_lymphoma,
+                                                            at = list(mito_score_sum_lc = c(0, 1))))
+mp_cancer_hemato_lymphoma
+
+# prevalence ratio
+pr_cancer_hemato_lymphoma <- mp_cancer_hemato_lymphoma$Prediction[2]/mp_cancer_hemato_lymphoma$Prediction[1]
+pr_cancer_hemato_lymphoma
+
+# 95% confidence interval using delta method 
+var_cancer_hemato_lymphoma_ref <- (mp_cancer_hemato_lymphoma$SE[1]^2)/(mp_cancer_hemato_lymphoma$Prediction[1]^2)
+var_cancer_hemato_lymphoma_comp <- (mp_cancer_hemato_lymphoma$SE[2]^2)/(mp_cancer_hemato_lymphoma$Prediction[2]^2)
+se_logpr_mito_score_sum_lc <- sqrt(var_cancer_hemato_lymphoma_ref + var_cancer_hemato_lymphoma_comp)
+
+pr_cancer_hemato_lymphoma_lci <- exp(log(pr_cancer_hemato_lymphoma) - 1.96*se_logpr_mito_score_sum_lc)
+pr_cancer_hemato_lymphoma_uci <- exp(log(pr_cancer_hemato_lymphoma) + 1.96*se_logpr_mito_score_sum_lc)
+
+prev_lymphoma <- c(pr_cancer_hemato_lymphoma, pr_cancer_hemato_lymphoma_lci, pr_cancer_hemato_lymphoma_uci)
+prev_lymphoma
+```
+
+### Leukemias  
+```{r analysis_04 prev_leukemia}
+model <- prev_cancer_hemato_leukemia ~ mito_score_sum_lc + center + rcs(age, df= 4) + sex + smk + alc + bmi + wbc + hap
+lr_cancer_hemato_leukemia <- glm(model,
+                                 family = binomial,
+                                 data = ukb_prev) 
+
+# marginal prevalence 
+mp_cancer_hemato_leukemia <- summary(prediction::prediction(lr_cancer_hemato_leukemia, 
+                                                            at = list(mito_score_sum_lc = c(0, 1))))
+mp_cancer_hemato_leukemia
+
+# prevalence ratio
+pr_cancer_hemato_leukemia <- mp_cancer_hemato_leukemia$Prediction[2]/mp_cancer_hemato_leukemia$Prediction[1]
+pr_cancer_hemato_leukemia
+
+# 95% confidence interval using delta method 
+var_cancer_hemato_leukemia_ref <- (mp_cancer_hemato_leukemia$SE[1]^2)/(mp_cancer_hemato_leukemia$Prediction[1]^2)
+var_cancer_hemato_leukemia_comp <- (mp_cancer_hemato_leukemia$SE[2]^2)/(mp_cancer_hemato_leukemia$Prediction[2]^2)
+se_logpr_mito_score_sum_lc <- sqrt(var_cancer_hemato_leukemia_ref + var_cancer_hemato_leukemia_comp)
+
+pr_cancer_hemato_leukemia_lci <- exp(log(pr_cancer_hemato_leukemia) - 1.96*se_logpr_mito_score_sum_lc)
+pr_cancer_hemato_leukemia_uci <- exp(log(pr_cancer_hemato_leukemia) + 1.96*se_logpr_mito_score_sum_lc)
+
+prev_leukemia <- c(pr_cancer_hemato_leukemia, pr_cancer_hemato_leukemia_lci, pr_cancer_hemato_leukemia_uci)
+prev_leukemia
+```
+
+## Combine results table  
+```{r analysis_04 prev results}
+prev_results <- rbind(prev_lung, prev_breast, prev_lymphoma, prev_leukemia) %>%
+  as.data.frame() %>%
+  rename(
+    coef = V1,
+    lci = V2, 
+    uci = V3
+  ) 
+prev_results
+```
+
+## Merge table and results  
+```{r analysis_04 prev table results}
+data_prev <- bind_cols(
+  prev_table, prev_results
+  ) %>%
+  mutate(
+    `PR (95% CI)` = sprintf("%.2f (%.2f to %.2f)", coef, lci, uci),
+    ` ` = paste(rep(" ", 25), collapse= " ") 
+  ) %>%
+  dplyr::select(
+    `Cancer type`, Events, ` `, `PR (95% CI)`, everything()
+  ) 
+
+data_prev
+```
+
+## Figure 7a  
+```{r analysis_04 figure7a, fig.height=3, fig.width=7}
+fig7a <- forestploter::forest(
+  data_prev[, c(1:4)],
+  est = data_prev$coef,
+  lower = data_prev$lci,
+  upper = data_prev$uci,
+  sizes = 0.4,
+  ci_column = 3,
+  ref_line = 1,
+  xlog = TRUE,
+  xlim = c(0.7, 6), 
+  ticks_at = c(0.75, 1, 1.5, 2.0, 5),
+  title = "Prevalence ratios for each cancer type"
+  )
+fig7a
+```
+
+# Incident cancer  
+## Case definition  
+* Combine incident and mortality as an outcome definition  
+```{r analysis_04 inc case definition}
+ukb %<>%
+  mutate(
+    yn_cancer = 
+      case_when(
+        cancer_dx_cancer == 1 | cod_cancer == 1 ~ 1, 
+        TRUE ~ 0
+      ),
+    yn_resp = 
+      case_when(
+        cancer_dx_resp == 1 | cod_cancer_resp == 1 ~ 1,
+        TRUE ~ 0
+      ),
+    yn_breast =
+      case_when(
+        cancer_dx_breast == 1 | cod_cancer_breast == 1 ~ 1,
+        TRUE ~ 0
+      ),
+    yn_hemato_lymphoma = 
+      case_when(
+        cancer_dx_hemato_lymphoma == 1 | cod_cancer_lymphoma == 1 ~ 1,
+        TRUE ~ 0
+      ),
+    yn_hemato_leukemia = 
+      case_when(
+        cancer_dx_hemato_leukemia == 1 | cod_cancer_leukemia == 1 ~ 1,
+        TRUE ~ 0
+      )
+  )
+```
+
+## Dates of each event  
+* The date of event for each case is defined as the minimum of the two dates (`cancer_date_*` and `date_of_death`)  
+* When the two are equal, we keep the `cancer_date_*`  
+* For those who died without having a neoplasm, the date of event is `date_of_death`  
+* For those who did not have neoplasm and did not die, the date of event is the date of administrative censoring  
+```{r analysis_04 inc dates}
+adm_censor <- as.Date("2021-11-12")
+
+ukb %<>%
+  mutate(
+    date_cancer = 
+      as.Date(
+        ifelse(yn_cancer == 1 & ((cancer_date_cancer <= date_of_death) | death == 0),
+               cancer_date_cancer, 
+               ifelse(yn_cancer == 0 & death == 1, date_of_death, adm_censor)), 
+        origin = "1970-01-01"
+      ),
+    date_resp = 
+      as.Date(
+        ifelse(yn_resp == 1 & ((cancer_date_resp <= date_of_death) | death == 0),
+               cancer_date_resp,
+               ifelse(yn_resp == 0 & death == 1, date_of_death, adm_censor)),
+        origin = "1970-01-01"
+      ),
+    date_breast = 
+      as.Date(
+        ifelse(yn_breast == 1 & ((cancer_date_breast <= date_of_death) | death == 0),
+               cancer_date_breast,
+               ifelse(yn_breast == 0 & death == 1, date_of_death, adm_censor)),
+        origin = "1970-01-01"
+      ),
+    date_hemato_lymphoma = 
+      as.Date(
+        ifelse(yn_hemato_lymphoma == 1 & ((cancer_date_hemato_lymphoma <= date_of_death) | death == 0),
+               cancer_date_hemato_lymphoma,
+               ifelse(yn_hemato_lymphoma == 0 & death == 1, date_of_death, adm_censor)),
+        origin = "1970-01-01"
+      ),
+    date_hemato_leukemia = 
+      as.Date(
+        ifelse(yn_hemato_leukemia == 1 & ((cancer_date_hemato_leukemia <= date_of_death) | death == 0),
+               cancer_date_hemato_leukemia,
+               ifelse(yn_hemato_leukemia == 0 & death == 1, date_of_death, adm_censor)),
+        origin = "1970-01-01"
+      )
+    ) 
+```
+
+## Exclusion of prevalent cases  
+* Exclude from the analysis if an individual had **any** cancer prior to assessment visit  (n = 13,701)  
+* In addition, also exclude 1272 participants when the date of diagnosis is missing for any of the outcomes.  
+```{r analysis_04 inc exclude prev}
+ukb %>%
+  count(date_cancer < dov)
+
+ukb_inc <- ukb %>% ## (n = 180528)
+  filter(date_cancer >= dov &
+          !is.na(date_cancer) & !is.na(date_resp) & !is.na(date_breast) & !is.na(date_hemato_lymphoma) & !is.na(date_hemato_leukemia)
+         ) %>%
+  filter(!is.na(smk_na) & !is.na(alc_na) & !is.na(bmi) & !is.na(wbc) & !is.na(hap))
+```
+
+## Table of events  
+```{r analysis_04 inc_table}
+inc_table <- 
+  apply(ukb_inc[c("yn_resp", "yn_breast", "yn_hemato_lymphoma", "yn_hemato_leukemia")], 2, table) %>%
+  t() %>%
+  as.data.frame() %>%
+  rownames_to_column("Cancer type") %>%
+  mutate(
+    `Cancer type` = case_when(
+      `Cancer type` == "yn_resp" ~ "Lung", 
+      `Cancer type` == "yn_breast" ~ "Breast",
+      `Cancer type` == "yn_hemato_lymphoma" ~ "Lymphoma", 
+      `Cancer type` == "yn_hemato_leukemia" ~ "Leukemia"
+    )
+  ) %>%
+  rename(Events = `1`) %>%
+  select(`Cancer type`, Events)
+inc_table
+```
+
+## Settings for survival analysis   
+### Time to event    
+```{r analysis_04 inc time to event}
+ukb_inc %<>%
+  mutate(
+    time_resp = as.numeric((date_resp - dov)/365.25),
+    time_breast = as.numeric((date_breast - dov)/365.25),
+    time_hemato_lymphoma = as.numeric((date_hemato_lymphoma - dov)/365.25),
+    time_hemato_leukemia = as.numeric((date_hemato_leukemia - dov)/365.25)
+  ) 
+```
+
+### Survival object  
+### Malignant neoplasms of respiratory and intrathoracic organs  
+```{r analysis_04 cs_resp_obj}
+cs_resp_obj <- with(ukb_inc, Surv(time = time_resp, event = yn_resp))
+
+model <- cs_resp_obj ~ mito_score_sum_lc + strata(center) + rcs(age, df= 4) + sex + smk + alc + bmi + wbc + hap
+inc_lung <- survival::coxph(model, data = ukb_inc) 
+summary(inc_lung)
+
+coef_lung <- summary(inc_lung)$coef[1, 1:3]
+coef_lung
+``` 
+
+### Malignant neoplasm of breast  
+```{r analysis_04 cs_breast_obj}
+cs_breast_obj <- with(ukb_inc, Surv(time = time_breast, event = yn_breast))
+
+model <- cs_breast_obj ~ mito_score_sum_lc + strata(center) + rcs(age, df= 4) + smk + alc + bmi + wbc + hap
+inc_breast <- survival::coxph(model, data = ukb_inc, subset = sex == "women") 
+summary(inc_breast)
+
+coef_breast <- summary(inc_breast)$coef[1, 1:3]
+coef_breast
+```
+
+#### Lymphomas  
+```{r analysis_04 cs_hemato_lymphoma_obj}
+cs_hemato_lymphoma_obj <- with(ukb_inc, Surv(time = time_hemato_lymphoma, event = yn_hemato_lymphoma))
+
+model <- cs_hemato_lymphoma_obj ~ mito_score_sum_lc + strata(center) + rcs(age, df= 4) + sex + smk + alc + bmi + wbc + hap
+inc_lymphoma <- survival::coxph(model, data = ukb_inc) 
+summary(inc_lymphoma)
+
+coef_lymphoma <- summary(inc_lymphoma)$coef[1, 1:3]
+coef_lymphoma
+```
+
+#### Leukemias  
+```{r analysis_04 cs_hemato_leukemia_obj}
+cs_hemato_leukemia_obj <- with(ukb_inc, Surv(time = time_hemato_leukemia, event = yn_hemato_leukemia))
+
+model <- cs_hemato_leukemia_obj ~ mito_score_sum_lc + strata(center) + rcs(age, df= 4) + sex + smk + alc + bmi + wbc + hap
+inc_leukemia <- survival::coxph(model, data = ukb_inc) 
+summary(inc_leukemia)
+
+coef_leukemia <- summary(inc_leukemia)$coef[1, 1:3]
+coef_leukemia
+```
+
+## Combine results table  
+```{r analysis_04 inc results}
+inc_results <- rbind(coef_lung, coef_breast, coef_lymphoma, coef_leukemia) %>%
+  as.data.frame() %>%
+  mutate(
+    lci = exp(coef - 1.96*`se(coef)`),
+    uci = exp(coef + 1.96*`se(coef)`),
+    `HR (95% CI)` = sprintf("%.2f (%.2f to %.2f)", `exp(coef)`, lci, uci),
+    ` ` = paste(rep(" ", 25), collapse= " ") 
+  )
+inc_results
+```
+
+## Merge table and results  
+```{r analysis_04 inc table results}
+data_inc <- bind_cols(
+  inc_table, inc_results
+  ) %>%
+  dplyr::select(
+    `Cancer type`, Events, ` `, `HR (95% CI)`, everything()
+  ) 
+
+data_inc
+```
+
+## Figure 7b  
+```{r analysis_04 figure7b, fig.height=3, fig.width=7}
+fig7b <- forestploter::forest(
+  data_inc[, c(1:4)],
+  est = data_inc$`exp(coef)`,
+  lower = data_inc$lci,
+  upper = data_inc$uci,
+  sizes = 0.4,
+  ci_column = 3,
+  ref_line = 1,
+  xlog = TRUE,
+  xlim = c(0.7, 6), 
+  ticks_at = c(0.75, 1, 1.5, 2.0, 5),
+  title = "Hazard ratios for each cancer type"
+  )
+fig7b
+```
+
+# Mortality in cancer patients  
+* This model uses Fine and Gray method for competing risks. As late entries are not allowed in R, we use Stata to run the models.  
+
+## Case definitions for competing event    
+* event of interest is coded as `1`, death due to (other) cancers is coded as `2`, and non-cancer deaths (including benign neoplasms) are coded as `3`.  
+
+### Malignant neoplasms of respiratory and intrathoracic organs  
+```{r analysis_04 death event_resp}
+ukb_death <- ukb %>% 
+  filter(!is.na(smk_na) & !is.na(alc_na) & !is.na(bmi) & !is.na(wbc) & !is.na(hap))
+
+ukb_death %<>%
+  mutate(
+    event_resp = 
+      case_when(
+        death == 0 ~ 0, 
+        cod_cancer_resp == 1 ~ 1,
+        cod_cancer == 1 & cod_cancer_resp == 0 ~ 2,
+        cod_infection == 1 | (cod_neoplasm == 1 & cod_cancer == 0) | cod_blood == 1 | cod_endocrine == 1 | cod_mental == 1 |
+          cod_neuro == 1 | cod_ear == 1 | cod_cardio == 1 | cod_pulmo == 1 | cod_gi == 1 | cod_skin == 1 | cod_muscle == 1 | 
+          cod_gu == 1 | cod_pregnancy == 1 | cod_congenital == 1 | cod_uns == 1 | cod_special == 1 | cod_external == 1 ~ 3
+      )
+  ) 
+
+table_lung <- table(ukb_death$prev_inc_resp, ukb_death$event_resp) %>%
+  unclass() %>%
+  t() %>%
+  as.data.frame() %>%
+  rownames_to_column("type") %>%
+  mutate(
+    Any = `0` + `1`
+  ) %>%
+  rename(
+    Prevalent = `0`,
+    Incident = `1`
+  )  %>%
+  filter(type == 1) %>%
+  add_row(
+    Any = table(ukb_death$prev_inc_resp)[1] + table(ukb_death$prev_inc_resp)[2],
+    Prevalent = table(ukb_death$prev_inc_resp)[1],
+    Incident = table(ukb_death$prev_inc_resp)[2]
+  ) %>%
+  dplyr::select(-type) %>%
+  t() %>%
+  as.data.frame() %>%
+  rownames_to_column("Prevalent or incident") %>%
+  mutate(
+    "Cancer type" = c("", "", "")
+  ) %>%
+  add_row(
+    `Cancer type` = "Lung"
+  ) %>%
+  rename(
+    Events = V1,
+    Total = V2
+  ) %>%
+  mutate(
+    order = c(3, 4, 2, 1),
+    `Prevalent or incident` = case_when(
+      `Cancer type` == "Lung" ~ "",
+      TRUE ~ `Prevalent or incident`
+    ),
+    Total = case_when(
+      `Cancer type` == "Lung" ~ "",
+      TRUE ~ as.character(Total)
+    ),
+    Events = case_when(
+      `Cancer type` == "Lung" ~ "",
+      TRUE ~ as.character(Events)
+    )
+  ) %>%
+  arrange(order) %>%
+  dplyr::select(`Cancer type`, `Prevalent or incident`, Total, Events)
+table_lung
+```
+
+### Malignant neoplasm of breast    
+```{r analysis_04 death event_breast}
+ukb_death %<>%
+  mutate(
+    event_breast = 
+      case_when(
+        death == 0 ~ 0, 
+        cod_cancer_breast == 1 ~ 1,
+        cod_cancer == 1 & cod_cancer_breast == 0 ~ 2,
+        cod_infection == 1 | (cod_neoplasm == 1 & cod_cancer == 0) | cod_blood == 1 | cod_endocrine == 1 | cod_mental == 1 |
+          cod_neuro == 1 | cod_ear == 1 | cod_cardio == 1 | cod_pulmo == 1 | cod_gi == 1 | cod_skin == 1 | cod_muscle == 1 | 
+          cod_gu == 1 | cod_pregnancy == 1 | cod_congenital == 1 | cod_uns == 1 | cod_special == 1 | cod_external == 1 ~ 3
+      )
+  ) 
+
+
+table_breast <- table(ukb_death$prev_inc_breast, ukb_death$event_breast) %>%
+  unclass() %>%
+  t() %>%
+  as.data.frame() %>%
+  rownames_to_column("type") %>%
+  mutate(
+    Any = `0` + `1`
+  ) %>%
+  rename(
+    Prevalent = `0`,
+    Incident = `1`
+  )  %>%
+  filter(type == 1) %>%
+  add_row(
+    Any = table(ukb_death$prev_inc_breast)[1] + table(ukb_death$prev_inc_breast)[2],
+    Prevalent = table(ukb_death$prev_inc_breast)[1],
+    Incident = table(ukb_death$prev_inc_breast)[2]
+  ) %>%
+  dplyr::select(-type) %>%
+  t() %>%
+  as.data.frame() %>%
+  rownames_to_column("Prevalent or incident") %>%
+  mutate(
+    "Cancer type" = c("", "", "")
+  ) %>%
+  add_row(
+    `Cancer type` = "Breast"
+  ) %>%
+  rename(
+    Events = V1,
+    Total = V2
+  ) %>%
+  mutate(
+    order = c(3, 4, 2, 1),
+    `Prevalent or incident` = case_when(
+      `Cancer type` == "Breast" ~ "",
+      TRUE ~ `Prevalent or incident`
+    ),
+    Total = case_when(
+      `Cancer type` == "Breast" ~ "",
+      TRUE ~ as.character(Total)
+    ),
+    Events = case_when(
+      `Cancer type` == "Breast" ~ "",
+      TRUE ~ as.character(Events)
+    )
+  ) %>%
+  arrange(order) %>%
+  dplyr::select(`Cancer type`, `Prevalent or incident`, Total, Events)
+table_breast
+```
+
+### Lymphoma  
+```{r analysis_04 death event_lymphoma}
+ukb_death %<>%
+  mutate(
+    event_lymphoma = 
+      case_when(
+        death == 0 ~ 0, 
+        cod_cancer_lymphoma == 1 ~ 1,
+        cod_cancer == 1 & cod_cancer_lymphoma == 0 ~ 2,
+        cod_infection == 1 | (cod_neoplasm == 1 & cod_cancer == 0) | cod_blood == 1 | cod_endocrine == 1 | cod_mental == 1 |
+          cod_neuro == 1 | cod_ear == 1 | cod_cardio == 1 | cod_pulmo == 1 | cod_gi == 1 | cod_skin == 1 | cod_muscle == 1 | 
+          cod_gu == 1 | cod_pregnancy == 1 | cod_congenital == 1 | cod_uns == 1 | cod_special == 1 | cod_external == 1 ~ 3
+      )
+  ) 
+table_lymphoma <- table(ukb_death$prev_inc_hemato_lymphoma, ukb_death$event_lymphoma) %>%
+  unclass() %>%
+  t() %>%
+  as.data.frame() %>%
+  rownames_to_column("type") %>%
+  mutate(
+    Any = `0` + `1`
+  ) %>%
+  rename(
+    Prevalent = `0`,
+    Incident = `1`
+  ) %>%
+  filter(type == 1) %>%
+  add_row(
+    Any = table(ukb_death$prev_inc_hemato_lymphoma)[1] + table(ukb_death$prev_inc_hemato_lymphoma)[2],
+    Prevalent = table(ukb_death$prev_inc_hemato_lymphoma)[1],
+    Incident = table(ukb_death$prev_inc_hemato_lymphoma)[2]
+  ) %>%
+  dplyr::select(-type) %>%
+  t() %>%
+  as.data.frame() %>%
+  rownames_to_column("Prevalent or incident") %>%
+  mutate(
+    "Cancer type" = c("", "", "")
+  ) %>%
+  add_row(
+    `Cancer type` = "Lymphoma"
+  ) %>%
+  rename(
+    Events = V1,
+    Total = V2
+  ) %>%
+  mutate(
+    order = c(3, 4, 2, 1),
+    `Prevalent or incident` = case_when(
+      `Cancer type` == "Lymphoma" ~ "",
+      TRUE ~ `Prevalent or incident`
+    ),
+    Total = case_when(
+      `Cancer type` == "Lymphoma" ~ "",
+      TRUE ~ as.character(Total)
+    ),
+    Events = case_when(
+      `Cancer type` == "Lymphoma" ~ "",
+      TRUE ~ as.character(Events)
+    )
+  ) %>%
+  arrange(order) %>%
+  dplyr::select(`Cancer type`, `Prevalent or incident`, Total, Events)
+table_lymphoma
+```
+
+### Leukemia  
+```{r analysis_04 death event_leukemia}
+ukb_death %<>%
+  mutate(
+    event_leukemia = 
+      case_when(
+        death == 0 ~ 0, 
+        cod_cancer_leukemia == 1 ~ 1,
+        cod_cancer == 1 & cod_cancer_leukemia == 0 ~ 2,
+        cod_infection == 1 | (cod_neoplasm == 1 & cod_cancer == 0) | cod_blood == 1 | cod_endocrine == 1 | cod_mental == 1 |
+          cod_neuro == 1 | cod_ear == 1 | cod_cardio == 1 | cod_pulmo == 1 | cod_gi == 1 | cod_skin == 1 | cod_muscle == 1 | 
+          cod_gu == 1 | cod_pregnancy == 1 | cod_congenital == 1 | cod_uns == 1 | cod_special == 1 | cod_external == 1 ~ 3
+      )
+  ) 
+table_leukemia <- table(ukb_death$prev_inc_hemato_leukemia, ukb_death$event_leukemia) %>%
+  unclass() %>%
+  t() %>%
+  as.data.frame() %>%
+  rownames_to_column("type") %>%
+  mutate(
+    Any = `0` + `1`
+  ) %>%
+  rename(
+    Prevalent = `0`,
+    Incident = `1`
+  ) %>%
+  filter(type == 1) %>%
+  add_row(
+    Any = table(ukb_death$prev_inc_hemato_leukemia)[1] + table(ukb_death$prev_inc_hemato_leukemia)[2],
+    Prevalent = table(ukb_death$prev_inc_hemato_leukemia)[1],
+    Incident = table(ukb_death$prev_inc_hemato_leukemia)[2]
+  ) %>%
+  dplyr::select(-type) %>%
+  t() %>%
+  as.data.frame() %>%
+  rownames_to_column("Prevalent or incident") %>%
+  mutate(
+    "Cancer type" = c("", "", "")
+  ) %>%
+  add_row(
+    `Cancer type` = "Leukemia"
+  ) %>%
+  rename(
+    Events = V1,
+    Total = V2
+  ) %>%
+  mutate(
+    order = c(3, 4, 2, 1),
+    `Prevalent or incident` = case_when(
+      `Cancer type` == "Leukemia" ~ "",
+      TRUE ~ `Prevalent or incident`
+    ),
+    Total = case_when(
+      `Cancer type` == "Leukemia" ~ "",
+      TRUE ~ as.character(Total)
+    ),
+    Events = case_when(
+      `Cancer type` == "Leukemia" ~ "",
+      TRUE ~ as.character(Events)
+    )
+  ) %>%
+  arrange(order) %>%
+  dplyr::select(`Cancer type`, `Prevalent or incident`, Total, Events)
+table_leukemia
+```
+
+### Combine event table  
+```{r analysis_04 death table}
+death_table <- rbind(table_lung, table_breast, table_lymphoma, table_leukemia)
+death_table
+```
+
+## Settings for survival analysis   
+### Time to event  
+```{r analysis_04 death time to event}
+ukb_death %<>%
+  mutate(
+    entry_resp = as.Date(ifelse(prev_cancer_resp == 1, dov, cancer_date_resp), origin = "1970-01-01"),
+    exit_resp = death_end_fu,
+    origin_resp = cancer_date_resp,
+    time_resp = as.numeric((exit_resp - entry_resp)/365.25)
+  )
+
+ukb_death %<>%
+  mutate(
+    entry_breast = as.Date(ifelse(prev_cancer_breast == 1, dov, cancer_date_breast), origin = "1970-01-01"),
+    exit_breast = death_end_fu,
+    origin_breast = cancer_date_breast,
+    time_breast = as.numeric((exit_breast - entry_breast)/365.25)
+  )
+
+ukb_death %<>%
+  mutate(
+    entry_hemato_lymphoma = as.Date(ifelse(prev_cancer_hemato_lymphoma == 1, dov, cancer_date_hemato_lymphoma), origin = "1970-01-01"),
+    exit_hemato_lymphoma = death_end_fu,
+    origin_hemato_lymphoma = cancer_date_hemato_lymphoma,
+    time_hemato_lymphoma = as.numeric((exit_hemato_lymphoma - entry_hemato_lymphoma)/365.25)
+  )
+
+ukb_death %<>%
+  mutate(
+    entry_hemato_leukemia = as.Date(ifelse(prev_cancer_hemato_leukemia == 1, dov, cancer_date_hemato_leukemia), origin = "1970-01-01"),
+    exit_hemato_leukemia = death_end_fu,
+    origin_hemato_leukemia = cancer_date_hemato_leukemia,
+    time_hemato_leukemia = as.numeric((exit_hemato_leukemia - entry_hemato_leukemia)/365.25)
+  )
+```
+
+### Survival analysis in Stata
+```{r analysis_04 death stata}
+stata("heteroplasmy_mortality_analysis_04_mss_cancer.do")
+```
+
+### Read in Stata results  
+```{r analysis_04 death stata output}
+death_results <- readxl::read_excel("heteroplasmy_mortality_analysis_04_mss_cancer_stata_output.xlsx") %>%
+  dplyr::select(-`...1`) %>%
+  filter(`...2` == "mito_score_sum_lc") 
+death_results
+
+# Lung cancer
+death_lung <- death_results %>%
+  dplyr::select("any_lung...3", "any_lung...4", "prev_lung...11", "prev_lung...12", "inc_lung...19", "inc_lung...20") %>%
+  data.table::setnames(
+    c("any_lung...3", "any_lung...4", "prev_lung...11", "prev_lung...12", "inc_lung...19", "inc_lung...20"),
+    c("any_coef", "any_se", "prev_coef", "prev_se", "inc_coef", "inc_se")
+  )  
+
+death_lung %<>%
+  pivot_longer(
+    everything(),
+    names_to = c("Prevalent or incident", ".value"),
+    names_pattern = "(.*)_(.*)"
+  ) %>%
+  mutate(
+    `Cancer type` = c("", "", "")
+  ) %>%
+  add_row(
+    `Cancer type` = "Lung"
+  ) %>%
+  mutate(
+    `Prevalent or incident` = case_when(
+      `Prevalent or incident` == "any" ~ "Any",
+      `Prevalent or incident` == "prev" ~ "Prevalent",
+      `Prevalent or incident` == "inc" ~ "Incident", 
+      TRUE ~ "" 
+    ),
+    order = c(2, 3, 4, 1)
+  ) %>% 
+  arrange(order) %>%
+  dplyr::select(
+    `Cancer type`, `Prevalent or incident`, coef, se 
+  )
+death_lung
+
+# Breast cancer
+death_breast <- death_results %>%
+  dplyr::select("any_breast...5", "any_breast...6", "prev_breast...13", "prev_breast...14", "inc_breast...21", "inc_breast...22") %>%
+  data.table::setnames(
+    c("any_breast...5", "any_breast...6", "prev_breast...13", "prev_breast...14", "inc_breast...21", "inc_breast...22"),
+    c("any_coef", "any_se", "prev_coef", "prev_se", "inc_coef", "inc_se")
+  )
+
+death_breast %<>%
+  pivot_longer(
+    everything(),
+    names_to = c("Prevalent or incident", ".value"),
+    names_pattern = "(.*)_(.*)"
+  ) %>%
+  mutate(
+    `Cancer type` = c("", "", "")
+  ) %>%
+  add_row(
+    `Cancer type` = "Breast"
+  ) %>%
+  mutate(
+    `Prevalent or incident` = case_when(
+      `Prevalent or incident` == "any" ~ "Any",
+      `Prevalent or incident` == "prev" ~ "Prevalent",
+      `Prevalent or incident` == "inc" ~ "Incident", 
+      TRUE ~ "" 
+    ),
+    order = c(2, 3, 4, 1)
+  ) %>% 
+  arrange(order) %>%
+  dplyr::select(
+    `Cancer type`, `Prevalent or incident`, coef, se 
+  )
+death_breast
+
+# Lymphoma  
+death_lymphoma <- death_results %>%
+  dplyr::select("any_lymphoma...7", "any_lymphoma...8", "prev_lymphoma...15", "prev_lymphoma...16", "inc_lymphoma...23", "inc_lymphoma...24") %>%
+  data.table::setnames(
+    c("any_lymphoma...7", "any_lymphoma...8", "prev_lymphoma...15", "prev_lymphoma...16", "inc_lymphoma...23", "inc_lymphoma...24"),
+    c("any_coef", "any_se", "prev_coef", "prev_se", "inc_coef", "inc_se")
+  ) 
+
+death_lymphoma %<>%
+  pivot_longer(
+    everything(),
+    names_to = c("Prevalent or incident", ".value"),
+    names_pattern = "(.*)_(.*)"
+  ) %>%
+  mutate(
+    `Cancer type` = c("", "", "")
+  ) %>%
+  add_row(
+    `Cancer type` = "Lymphoma"
+  ) %>%
+  mutate(
+    `Prevalent or incident` = case_when(
+      `Prevalent or incident` == "any" ~ "Any",
+      `Prevalent or incident` == "prev" ~ "Prevalent",
+      `Prevalent or incident` == "inc" ~ "Incident", 
+      TRUE ~ "" 
+    ),
+    order = c(2, 3, 4, 1)
+  ) %>% 
+  arrange(order) %>%
+  dplyr::select(
+    `Cancer type`, `Prevalent or incident`, coef, se 
+  )
+death_lymphoma
+
+# Leukemia
+death_leukemia <- death_results %>%
+  dplyr::select("any_leukemia...9", "any_leukemia...10", "prev_leukemia...17", "prev_leukemia...18", "inc_leukemia...25", "inc_leukemia...26") %>%
+  data.table::setnames(
+    c("any_leukemia...9", "any_leukemia...10", "prev_leukemia...17", "prev_leukemia...18", "inc_leukemia...25", "inc_leukemia...26"),
+    c("any_coef", "any_se", "prev_coef", "prev_se", "inc_coef", "inc_se")
+  ) 
+
+death_leukemia %<>%
+  pivot_longer(
+    everything(),
+    names_to = c("Prevalent or incident", ".value"),
+    names_pattern = "(.*)_(.*)"
+  ) %>%
+  mutate(
+    `Cancer type` = c("", "", "")
+  ) %>%
+  add_row(
+    `Cancer type` = "Leukemia"
+  ) %>%
+  mutate(
+    `Prevalent or incident` = case_when(
+      `Prevalent or incident` == "any" ~ "Any",
+      `Prevalent or incident` == "prev" ~ "Prevalent",
+      `Prevalent or incident` == "inc" ~ "Incident", 
+      TRUE ~ "" 
+    ),
+    order = c(2, 3, 4, 1)
+  ) %>% 
+  arrange(order) %>%
+  dplyr::select(
+    `Cancer type`, `Prevalent or incident`, coef, se 
+  )
+death_leukemia
+```
+
+## Combine results table  
+```{r analysis_04 death results}
+death_results <- bind_rows(death_lung, death_breast, death_lymphoma, death_leukemia)
+death_results %<>%
+  mutate(
+    coef = as.numeric(coef),
+    se = as.numeric(se),
+    `exp(coef)` = exp(coef),
+    lci = exp(coef - 1.96*se),
+    uci = exp(coef + 1.96*se),
+    ` ` = paste(rep(" ", 25), collapse= " "),
+    coef = case_when(
+      `Cancer type` == "Lung" | `Cancer type` == "Breast" | `Cancer type` == "Lymphoma" | `Cancer type` == "Leukemia" ~ "",
+      TRUE ~ as.character(coef)
+    ),
+    se = case_when(
+      `Cancer type` == "Lung" | `Cancer type` == "Breast" | `Cancer type` == "Lymphoma" | `Cancer type` == "Leukemia" ~ "",
+      TRUE ~ as.character(se)
+    ),
+    `HR (95% CI)` = sprintf("%.2f (%.2f to %.2f)", `exp(coef)`, lci, uci), 
+    `HR (95% CI)` = case_when(
+      `Cancer type` == "Lung" | `Cancer type` == "Breast" | `Cancer type` == "Lymphoma" | `Cancer type` == "Leukemia" ~ "",
+      TRUE ~ as.character(`HR (95% CI)`)
+    )
+  ) %>%
+  dplyr::select(-c(`Cancer type`, `Prevalent or incident`))
+death_results
+```
+
+## Merge table and results  
+```{r analysis_04 death table results}
+data_death <- bind_cols(
+  death_table, death_results
+  ) %>%
+  dplyr::select(
+    `Cancer type`, `Prevalent or incident`, `Total`, Events, ` `, `HR (95% CI)`, everything()
+  ) 
+data_death
+```
+
+## Figure 7c  
+```{r analysis_04 figure7c, fig.height=6, fig.width=10}
+fig7c <- forestploter::forest(
+  data_death[, c(1:6)],
+  est = data_death$`exp(coef)`,
+  lower = data_death$lci,
+  upper = data_death$uci,
+  sizes = 0.4,
+  ci_column = 5,
+  ref_line = 1,
+  xlog = TRUE,
+  xlim = c(0.7, 6), 
+  ticks_at = c(0.75, 1.5, 2, 5),
+  title = "Hazard ratios for mortality due to cancer type"
+  )
+fig7c
+```
+
+# Figure 7  
+```{r analysis_04 figure7, fig.height=6, fig.width=18}
+fig7 <- ggpubr::ggarrange(
+  ggarrange(fig7a, fig7b, ncol = 1, labels = c("a", "b")), 
+  fig7c,
+  ncol = 2, 
+  labels = c("", "c"),
+  widths = c(0.8, 1)
+)
+fig7
+
+ggsave("ukb_heteroplasmy_outcomes_fig7.tiff", plot = fig7, height=6, width=16) 
+``` 

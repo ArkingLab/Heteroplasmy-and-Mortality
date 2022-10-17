@@ -1,0 +1,897 @@
+---
+title: "UKB - Heteroplasmy and mortality - data analysis"
+subtitle: "001 - descriptive statistics - Tables 1, 2, 3 & Figure 2"
+author: "Yun Soo Hong"
+date: '`r format(Sys.Date(), "%B %d, %Y")`'
+output: 
+  html_document:
+    toc: true
+    toc_float: 
+      collapsed: false
+      smooth_scroll: false
+    pandoc_args: [
+    "--number-sections",
+    "--number-offset=0"
+    ]
+fontsize: 11pt
+---
+
+# Set up  
+
+## Program description  
+* This program reads in the data sets to provide descriptive statistics, Tables 1, 2 & 3, and Figure 2.     
+  * Step 1: Read in data 
+    * `ukb_heteroplasmy_mortality_04_mito.rds`  
+    * `per_pos_ref_alt_count_with_all_filter_0929.txt`: this data set is updated from the `_0805.txt` to reflect missing values of `mito_lc_score` variable    
+    * `per_sample_count_with_all_filter_0805.txt`  
+  * Step 2: Descriptive data  
+    * Table 1  
+    * Table 2  
+    * Table 3  
+    * Figure 2  
+
+## Versions of R and packages  
+```{r analysis_01 set up, include = FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Load libraries
+```{r analysis_01 load libraries, echo = TRUE, message = FALSE}
+library(tidyverse)
+library(magrittr)
+library(lubridate)
+library(data.table)
+library(rms)
+library(RColorBrewer)
+```
+
+## Print out settings  
+```{r analysis_01 print settings}
+options(tibble.print_max = 100)
+options(pillar.sigfig = 5)
+```
+
+# Load data  
+## `mito` data used in the final analysis    
+```{r analysis_01 load data}
+mito <- readRDS("../data_cleaning/ukb_heteroplasmy_mortality_04_mito.rds")
+
+# A vector of id's of participants included in the study  
+mito_id <- mito %>%
+  select(id) %>%
+  pull()
+```
+
+## Per position data  
+```{r analysis_01 load data perpos}
+perpos <- fread("../../data/per_pos_ref_alt_count_with_all_filter_0929.txt") %>%
+  as.data.frame()
+``` 
+
+## Per sample data  
+```{r analysis_01 load data persample}
+persample <- fread("../../data/per_sample_count_with_all_filter_0805.txt") %>%
+  as.data.frame()
+```
+
+# Heteroplasmic SNVs   
+## Total heteroplasmic SNVs  
+* total heteroplasmic snvs match whether we use `mito` data or `perpos` data (n = 74369).  
+* `mito` derives from `all_variants_het_download_allfilter_0805.txt` originally (processed through "data_cleaning/ukb_heteroplasmy_mortality_04.mito.rds"), whereas `perpos` derives from `per_pos_ref_alt_count_with_all_filter_0929.txt`.    
+
+```{r analysis_01 het snv total}
+# using `mito`  
+mito %>%
+  summarise(
+    tot_het_snv = sum(het_count)
+  )
+
+perpos %>%
+  summarise(
+    tot_het_snv = sum(count_het)
+  )
+```
+
+## Proportion of participants by heteroplasmy count (Table 1)   
+```{r analysis_01 het snv prop}
+# Proportion of participants with at least 1 heteroplasmy
+mito %>%
+  mutate(
+    het_yn = ifelse(het_count == 0, 0, 1)
+  ) %>%
+  group_by(het_yn) %>%
+  summarise(
+    n = n()
+    ) %>%
+  mutate(
+    freq = n / sum(n)
+  )
+
+# Proportion of participants by heteroplasmy count (Table 1)  
+table1 <- mito %>%
+  group_by(het_count) %>%
+  summarise(
+    n = n()
+    ) %>%
+  mutate(
+    freq = n / sum(n),
+    prop = round((freq * 100), 2)
+  )
+table1 
+```
+
+## Unique variant alleles and positions   
+
+```{r analysis_01 het snv unique}
+# mtDNA base positions 
+mtdna_bp <- 16443
+
+perpos %>%
+  filter(count_het != 0) %>%
+  summarise(
+    unique_variants = n_distinct(unique), 
+    unique_positions = n_distinct(POS),
+    prop_pos = unique_positions/mtdna_bp
+  )
+```
+
+## Frequency of heteroplasmic SNVs in the population (Table 2)  
+
+```{r analysis_01 het snv freq}
+summary(perpos$count_het)
+
+table2 <- perpos %>%
+  mutate(
+    count_het_cat = case_when(
+      count_het == 0 ~ 0,
+      count_het == 1 ~ 1,
+      count_het >= 2 & count_het <= 10 ~ 2,
+      count_het >= 11 & count_het <= 100 ~ 3,
+      count_het >= 101 & count_het <= 1000 ~ 4,
+      count_het >= 1001 & !is.na(count_het) ~ 5
+    ),
+    count_het_cat = factor(
+      count_het_cat,
+      levels = c(0:5),
+      labels = c("None", "Singletons", "2-10", "11-100", "101-1000", "1000+")
+    )
+  ) %>%
+  group_by(count_het_cat) %>%
+  summarise(
+    n = n()
+    )
+table2
+```
+
+# Homoplasmic SNVs   
+
+## Total heteroplasmic SNVs  
+```{r analysis_01 homo snv total}
+perpos %>%
+  # Need fo filter to make sure that positions without any SNVs are not included  
+  filter(count_total != 0) %>%
+  summarise(
+    tot_homo_snv = sum(count_homo)
+  )
+```
+
+## Total number of participants with no homoplasmic variants    
+```{r analysis_01 homo snv none}
+persample %>%
+  # Select participants who are included in the final study population  
+  filter(
+    SAMPLE %in% mito_id
+  ) %>%
+  count(
+    count_homo == 0
+  )
+```
+
+## Unique variant alleles and positions  
+* The number and the proportion of positions that have both homoplasmic and heteroplasmic variants do not match those in the manuscript  
+```{r analysis_01 homo snv unique}
+# Positions that have homoplasmic variants  
+perpos %>%
+  filter(count_total != 0 & count_homo != 0) %>%
+  summarise(
+    unique_positions = n_distinct(POS),
+  )
+
+# Positions that have both homoplasmic and heteroplasmic variants  
+perpos %>%
+  filter(count_total != 0 & count_homo != 0) %>%
+  summarise(
+    unique_pos_homo = n_distinct(POS),
+    unique_pos_both = n_distinct(POS[count_het != 0])
+  ) %>%
+  mutate(
+    prop = unique_pos_both/unique_pos_homo
+  )
+```
+
+# All SNVs  
+## Unique variant alleles and positions  
+
+```{r analysis_01 all snv unique}
+# mtDNA base positions 
+mtdna_bp_all <- 16569
+
+perpos %>%
+  filter(count_total != 0) %>%
+  summarise(
+    unique_variants = n_distinct(unique), # unique variants = number of rows in the data
+    unique_positions = n_distinct(POS),
+    prop_pos = unique_positions/mtdna_bp_all
+  )
+```
+
+## Proportions by type of SNVs  
+```{r analysis_01 all snv prop}
+perpos %>%
+  filter(count_total != 0) %>%
+  mutate(
+    type = case_when(
+      count_het != 0 & count_homo != 0 ~ "Both",
+      count_het != 0 & count_homo == 0 ~ "Heteroplasmy",
+      count_het == 0 & count_homo != 0 ~ "Homoplasmy"
+      )
+    ) %>%
+  group_by(type) %>%
+  summarise(
+    value = n()
+  ) %>%
+  mutate(
+    total = sum(value), 
+    prop = round(value/total * 100, 1)
+    ) 
+```
+
+# Characteristics of heteroplasmic SNVs by gene type/region (Table 3)  
+## Gene lengths 
+* Total length for each region (based on https://www.ncbi.nlm.nih.gov/nuccore/251831106)  
+* There are some overlapping regions as noted below  
+  * 10470-10766: in I   
+  * 8366-8572, 8527-9207: in V      
+  * 4263-4331, 4329-4400: in tRNA  
+```{r analysis_01 table3 length}
+dloop_length = abs(16024-16569) + abs(1-576) + 2
+I_length = abs(3307-4262) + abs(4470-5511) + abs(10059-10404) + abs(10470-12137) + abs(12337-14148) + abs(14149-14673) + 6
+III_length = abs(14747-15887) + 1
+IV_length = abs(5904-7445) + abs(7586-8269) + abs(9207-9990) + 3
+V_length = abs(8366-9207) + 1
+tRNA_length = abs(577-647) + abs(1602-1670) + abs(3230-3304) + abs(4263-4400) + abs(4402-4469) + 
+  abs(5512-5579) + abs(5587-5655) + abs(5657-5729) + abs(5761-5826) + abs(5826-5891) + 
+  abs(7446-7514) + abs(7518-7585) + abs(8295-8364) + abs(9991-10058) + abs(10405-10469) + 
+  abs(12138-12206) + abs(12207-12265) + abs(12266-12336) + abs(14674-14742) + abs(15888-15953) + abs(15956-16023) + 21
+rRNA_length = abs(648-1601) + abs(1671-3229) + 2
+
+dloop_length + I_length + III_length + IV_length + V_length + tRNA_length + rRNA_length # 16482
+16569 - (dloop_length + I_length + III_length + IV_length + V_length + tRNA_length + rRNA_length)
+
+# possible combinations of variants  
+dloop_length_x3 = dloop_length * 3
+I_length_x3 = I_length * 3
+III_length_x3 = III_length * 3
+IV_length_x3 = IV_length * 3
+V_length_x3 = V_length * 3
+tRNA_length_x3 = tRNA_length * 3
+rRNA_length_x3 = rRNA_length * 3
+```
+
+## Transition-to-transversion ratio (Ti/Tv)  
+* For the calculation of Ti/Tv, we need to sum the number of people (reflected in `count_het`) for transition and transversion, separately, then divide # of transition to # of transversion (Ti/Tv). This is done only in those with at least 1 heteroplasmy. 
+
+```{r analysis_01 table3 titv}
+titv_overall <- perpos %>%
+  # only among those with at least 1 heteroplasmy  
+  filter(count_het != 0) %>%
+  group_by(Substitution) %>%
+  summarise(
+    n = sum(count_het)
+  ) %>%
+  mutate(
+    titv = n[1]/n[2]
+  )
+titv_overall
+
+# By complex
+titv_group <- perpos %>%
+  # only among those with at least 1 heteroplasmy  
+  filter(count_het != 0) %>%
+  group_by(COMPLEX, Substitution) %>%
+  summarise(
+    n = sum(count_het)
+  ) %>%
+  mutate(
+    titv = n[1]/n[2]
+  ) %>%
+  pivot_wider(
+    names_from = Substitution,
+    values_from = n
+  )
+titv_group
+```
+
+## Nonsynonymous mutations / synonymous mutations  
+* Need to check the numbers in the table 
+
+```{r analysis_01 table3 dnds}
+table(perpos$COMPLEX)
+
+perpos %>%
+  filter(count_het != 0) %>%
+  mutate(
+    coding = case_when(
+      COMPLEX == "I" | COMPLEX == "III" | COMPLEX == "IV" | COMPLEX == "V" ~ 1,
+      TRUE ~ 0
+    ),
+    nonsyn = case_when(
+      is.na(mutation_nonsynonymous) ~ "synonymous",
+      TRUE ~ "nonsynonymous"
+    )
+  ) %>%
+  filter(coding == 1) %>%
+  group_by(nonsyn) %>%
+  summarise(
+    n = n()
+  ) %>%
+  mutate(
+    dnds = n[1]/n[2]
+  )
+
+# By complex
+perpos %>%
+  filter(count_het != 0) %>%
+  mutate(
+    coding = case_when(
+      COMPLEX == "I" | COMPLEX == "III" | COMPLEX == "IV" | COMPLEX == "V" ~ 1,
+      TRUE ~ 0
+    ),
+    nonsyn = case_when(
+      is.na(mutation_nonsynonymous) ~ "synonymous",
+      TRUE ~ "nonsynonymous"
+    )
+  ) %>%
+  filter(coding == 1) %>%
+  group_by(COMPLEX, nonsyn) %>%
+  summarise(
+    n = n()
+  ) %>%
+  mutate(
+    dnds = n[1]/n[2]
+  ) %>%
+  pivot_wider(
+    names_from = nonsyn,
+    values_from = n
+  )
+```
+
+## Nonsense mutation sites (per length)  
+```{r analysis_01 table3 nonsense sites}
+perpos %>%
+  filter(count_het != 0) %>%
+  mutate(
+    coding = case_when(
+      COMPLEX == "I" | COMPLEX == "III" | COMPLEX == "IV" | COMPLEX == "V" ~ 1,
+      TRUE ~ 0
+    ),
+    stop = case_when(
+      is.na(mutation_stop) ~ 0,
+      TRUE ~ 1
+    )
+  ) %>%
+  filter(coding == 1 & stop == 1) %>%
+  summarise(
+    n = n_distinct(POS)
+  ) %>%
+  mutate(
+    per_length = round(n/(I_length + III_length + IV_length + V_length) * 1000, 1)
+  )
+
+# By complex
+perpos %>%
+  filter(count_het != 0) %>%
+  mutate(
+    coding = case_when(
+      COMPLEX == "I" | COMPLEX == "III" | COMPLEX == "IV" | COMPLEX == "V" ~ 1,
+      TRUE ~ 0
+    ),
+    stop = case_when(
+      is.na(mutation_stop) ~ 0,
+      TRUE ~ 1
+    ),
+    length = case_when(
+      COMPLEX == "I" ~ I_length[1], 
+      COMPLEX == "III" ~ III_length[1], 
+      COMPLEX == "IV" ~ IV_length[1],
+      COMPLEX == "V" ~ V_length[1],
+      TRUE ~ 0
+    )
+  ) %>%
+  filter(coding == 1 & stop == 1) %>%
+  group_by(COMPLEX) %>%
+  summarise(
+    n = n_distinct(POS),
+    length = min(length) # does not need to be minimum since all values are the same but we only need 1 row per complex  
+  ) %>%
+  mutate(
+    per_length = round(n/length * 1000, 1)
+  ) 
+```
+
+## Nonsense mutation alleles  
+```{r analysis_01 table3 nonsense alleles}
+perpos %>%
+  filter(count_het != 0) %>%
+  mutate(
+    coding = case_when(
+      COMPLEX == "I" | COMPLEX == "III" | COMPLEX == "IV" | COMPLEX == "V" ~ 1,
+      TRUE ~ 0
+    ),
+    stop = case_when(
+      is.na(mutation_stop) ~ 0,
+      TRUE ~ 1
+    )
+  ) %>%
+  filter(coding == 1 & stop == 1) %>%
+  summarise(
+    n = sum(count_het)
+  ) 
+
+# By complex
+perpos %>%
+  filter(count_het != 0) %>%
+  mutate(
+    coding = case_when(
+      COMPLEX == "I" | COMPLEX == "III" | COMPLEX == "IV" | COMPLEX == "V" ~ 1,
+      TRUE ~ 0
+    ),
+    stop = case_when(
+      is.na(mutation_stop) ~ 0,
+      TRUE ~ 1
+    ),
+    length = case_when(
+      COMPLEX == "I" ~ I_length[1], 
+      COMPLEX == "III" ~ III_length[1], 
+      COMPLEX == "IV" ~ IV_length[1],
+      COMPLEX == "V" ~ V_length[1],
+      TRUE ~ 0
+    )
+  ) %>%
+  filter(coding == 1 & stop == 1) %>%
+  group_by(COMPLEX) %>%
+  summarise(
+    n = sum(count_het)  
+  )  
+```
+
+## Mean MLC score (SE)  
+* Check the numbers in the table - slightly off  
+
+```{r analysis_01 table3 mean mlc}
+perpos %>%
+  filter(count_het != 0) %>%
+  summarise(
+    mean = mean(mito_lc_score, na.rm = TRUE),
+    se = sd(mito_lc_score, na.rm = TRUE)/sqrt(length(!is.na(mito_lc_score)))
+  ) 
+
+# By complex  
+perpos %>%
+  # only among those with at least 1 heteroplasmy  
+  filter(count_het != 0) %>%
+  group_by(COMPLEX) %>%
+  summarise(
+    mean = round(mean(mito_lc_score, na.rm = TRUE), 2),
+    se = round(sd(mito_lc_score, na.rm = TRUE)/sqrt(length(!is.na(mito_lc_score))), 4)
+  ) 
+```
+
+# Overview of mitochondrial SNV distributions (Figure 2)  
+```{r analysis_01 figure2 set up}
+# number of unique sites (n = 11318)  
+unique <- perpos %>%
+  distinct(POS) %>%
+  count() %>%
+  as.numeric()
+
+# hp_length: from DP
+hp_length = 126
+```
+
+## Proportion of mitochondrial DNA positions with SNVs  
+
+```{r analysis_01 figure2a}
+# data set for number of heteroplasmic SNVs (out of 16549 sites)
+dat <- 
+  tibble(
+    group = c("SNV", "None", "polyC"),
+    value = c(unique, mtdna_bp_all - unique, hp_length)
+    ) %>%
+  mutate(prop = value/mtdna_bp_all * 100,
+         group = factor(group, 
+                        levels = c("None", "SNV", "polyC"),
+                        labels = c("None", 
+                                   "Single nucleotide variants (SNVs)",
+                                   "polyC homopolymer regions"))) 
+
+fig2a <- dat %>%
+  mutate(
+    prop = round(prop, 1),
+    prop = as.character(prop),
+    prop = paste0(prop, "%")
+    ) %>%
+  ggplot() +
+  geom_col(
+    aes(x = 3, y = value, fill = group), 
+    color = "black"
+    ) +
+  geom_text(
+    aes(x = 1.7, y = value, label = prop, fill = group), 
+    position = position_stack(vjust = 0.5), 
+    size = 5.5) + 
+  coord_polar(theta = "y") +
+  scale_fill_manual(
+    "Number of mtDNA positions \n with SNVs (out of 16,569 bp)", 
+    values = c("orange", "navyblue", "red")
+    ) +
+  xlim(c(0.2, 3.5)) +
+  theme(
+    panel.background = element_rect(fill = "white"),
+    panel.grid = element_blank(),
+    axis.title = element_blank(),
+    axis.ticks = element_blank(),
+    axis.text = element_blank(),
+    legend.title = element_text(size = 12, face = "bold"),
+    legend.text = element_text(size = 12), 
+    legend.direction = "vertical"
+    )
+fig2a
+```
+
+## Proportion of SNV types  
+```{r analysis_01 figure2b}
+dat_variant_type <- perpos %>%
+  mutate(
+    type = case_when(
+      count_het != 0 & count_homo != 0 ~ "Both",
+      count_het != 0 & count_homo == 0 ~ "Heteroplasmy",
+      count_het == 0 & count_homo != 0 ~ "Homoplasmy"
+      )
+    ) %>%
+  group_by(type) %>%
+  summarise(
+    value = n(), 
+    prop = value/14294 * 100) %>%
+  ungroup()
+dat_variant_type
+
+fig2b <- dat_variant_type %>%
+  mutate(
+    prop = round(prop, 1),
+    prop = as.character(prop),
+    prop = paste0(prop, "%"),
+    type = factor(
+      type,
+      levels = c("Both", "Homoplasmy", "Heteroplasmy"),
+      labels = c("Both", "Homoplasmy", "Heteroplasmy")
+      )
+    ) %>%
+  ggplot() +
+  geom_col(
+    aes(x = 3, y = value, fill = type), 
+    color = "black"
+    ) +
+  geom_text(
+    aes(x = 1.7, y = value, label = prop, fill = type), 
+    position = position_stack(vjust = 0.5), 
+    size = 5.5) + 
+  coord_polar(theta = "y") +
+  scale_fill_manual(
+    "Variant type (n = 14,294)", 
+    values = c("#A6CEE3", "#B2DF8A", "#1F78B4")
+    ) +
+  xlim(c(0.2, 3.5)) +
+  theme(
+    panel.background = element_rect(fill = "white"),
+    panel.grid = element_blank(),
+    axis.title = element_blank(),
+    axis.ticks = element_blank(),
+    axis.text = element_blank(),
+    legend.title = element_text(size = 12, face = "bold"),
+    legend.text = element_text(size = 12), 
+    legend.direction = "vertical")
+fig2b
+```
+
+## Number of possible SNVs by protein complex or genic context  
+```{r analysis_01 figure2c}
+het_homo_table <- perpos %>% 
+  # generate a new varible indicating whether an SNV is only of heteroplasmy, homoplasmy, or both 
+  mutate(
+    het_homo = 
+      case_when(
+        count_het != 0 & count_homo == 0 ~ 1, # heteroplasmy only
+        count_het == 0 & count_homo != 0 ~ 2, # homoplasmy only
+        count_het != 0 & count_homo != 0 ~ 3  # both
+      ),
+    het_homo = 
+      factor(
+        het_homo,
+        levels = c(1, 2, 3),
+        labels = c("Heteroplasmy only", "Homoplasmy only", "Both")
+      )
+  ) %>%
+  select(POS, GENE, COMPLEX, het_homo) %>%
+  janitor::tabyl(COMPLEX, het_homo) %>%
+  # No variants = (Possible variants - observed)   
+  mutate(
+    None =
+      case_when(
+        COMPLEX == "DLOOP" ~ dloop_length_x3 - (`Both` + `Heteroplasmy only` + `Homoplasmy only`),
+        COMPLEX == "I" ~ I_length_x3 - (`Both` + `Heteroplasmy only` + `Homoplasmy only`),
+        COMPLEX == "III" ~ III_length_x3 - (`Both` + `Heteroplasmy only` + `Homoplasmy only`),
+        COMPLEX == "IV" ~ IV_length_x3 - (`Both` + `Heteroplasmy only` + `Homoplasmy only`),
+        COMPLEX == "RRNA" ~ rRNA_length_x3 - (`Both` + `Heteroplasmy only` + `Homoplasmy only`),
+        COMPLEX == "TRNA" ~ tRNA_length_x3 - (`Both` + `Heteroplasmy only` + `Homoplasmy only`),
+        COMPLEX == "V" ~ V_length_x3 - (`Both` + `Heteroplasmy only` + `Homoplasmy only`)
+      )
+  ) %>%
+  filter(!is.na(COMPLEX)) %>%
+  # from wide to long format  
+  pivot_longer(
+    !COMPLEX,
+    names_to = "type",
+    values_to = "count"
+  ) %>%
+  mutate(
+    COMPLEX = 
+      factor(
+        COMPLEX, 
+        levels = c("I", "III", "IV", "V", "DLOOP", "RRNA", "TRNA"),
+        labels = c("Complex I", "Complex III", "Complex IV", "Complex V", "D-loop", "rRNA", "tRNA")
+      ),
+    type = 
+      factor(
+        type, 
+        levels = c("None", "Both", "Homoplasmy only", "Heteroplasmy only"),
+        labels = c("None", "Both", "Homoplasmy only", "Heteroplasmy only")
+      )
+  ) %>%
+  filter(!is.na(type))
+het_homo_table
+
+fig2c <- het_homo_table %>%
+  ggplot() +
+  geom_bar(
+    aes(x = COMPLEX, y = count, fill = type), 
+    stat = "identity", 
+    color = "black") +
+  scale_x_discrete("") + 
+  scale_y_continuous(
+    "Number of possible variants",
+    expand = c(0, 0)) +
+  scale_fill_manual(
+    name = "Type", 
+    values = c("#FFFFFF", "#A6CEE3", "#B2DF8A", "#1F78B4")
+    ) + 
+  theme_classic() +
+  theme(
+    legend.title = element_text(size = 12, face = "bold"),
+    legend.text = element_text(size = 12),
+    axis.title = element_text(size = 12, face = "bold"),
+    axis.text = element_text(size = 10),
+    axis.text.x = element_text(angle = 15, vjust = 0.5, face = "bold")
+    )
+fig2c
+```
+
+## Proportion of possible SNVs by protein complex or genic context  
+```{r analysis_01 figure2d}
+fig2d <- het_homo_table %>%
+  ggplot() +
+  geom_bar(
+    aes(x = COMPLEX, y = count, fill = type), 
+    position = "fill", 
+    stat = "identity", 
+    color = "black") +
+  scale_x_discrete("") + 
+  scale_y_continuous(
+    "Proportion of possible variants",
+    expand = c(0, 0)
+    ) +
+  scale_fill_manual(
+    name = "Type", 
+    values = c("#FFFFFF", "#A6CEE3", "#B2DF8A", "#1F78B4")
+    ) + 
+  theme_classic() +
+  theme(
+    legend.title = element_text(size = 12, face = "bold"),
+    legend.text = element_text(size = 12),
+    axis.title = element_text(size = 12, face = "bold"),
+    axis.text = element_text(size = 10),
+    axis.text.x = element_text(angle = 15, vjust = 0.5, face = "bold"))
+fig2d
+```
+
+## Histogram of the median variant allele fraction (VAF)  
+```{r analysis_01 figure2e}
+fig2e <- perpos %>%
+  mutate(
+    het_homo = 
+      case_when(
+        count_het != 0 & count_homo == 0 ~ 1, # heteroplasmy only
+        count_het == 0 & count_homo != 0 ~ 2, # homoplasmy only
+        count_het != 0 & count_homo != 0 ~ 3  # both
+      ),
+    het_homo = 
+      factor(
+        het_homo,
+        levels = c(1, 2, 3),
+        labels = c("Heteroplasmy only", "Homoplasmy only", "Both")
+      ),   
+    het_homo = 
+      factor(
+        het_homo,
+        levels = c("Both", "Homoplasmy only", "Heteroplasmy only"),
+        labels = c("Both", "Homoplasmy only", "Heteroplasmy only"),
+      )
+  ) %>%
+  ggplot() + 
+  geom_histogram(
+    aes(x = Median_AF_Het, fill = het_homo), 
+    position = "identity", 
+    alpha = 0.8, 
+    binwidth = 0.02, 
+    color = "black"
+    ) +
+  scale_x_continuous(
+    "Median variant allele fraction (VAF)", 
+    expand = c(0, 0)
+    ) + 
+  scale_y_continuous(
+    "Number of variants", 
+    expand = c(0, 0)
+    ) + 
+  scale_fill_manual(
+    name = "Type", 
+    values = c("#A6CEE3", "#1F78B4")
+    ) + 
+  theme_classic() +
+  theme(
+    legend.title = element_text(size = 12, face = "bold"),
+    legend.text = element_text(size = 12),
+    axis.title = element_text(size = 12, face = "bold"),
+    axis.text = element_text(size = 10)
+    )
+fig2e
+```
+
+## Boxplot of the median VAF by type of mutation  
+```{r analysis_01 figure2f}
+fig2f <- perpos %>%
+  filter(!is.na(COMPLEX)) %>%
+  mutate(
+    COMPLEX = 
+      factor(
+        COMPLEX, 
+        levels = c("I", "III", "IV", "V", "DLOOP", "RRNA", "TRNA"),
+        labels = c("Complex I", "Complex III", "Complex IV", "Complex V", "D-loop", "rRNA", "tRNA")
+      ),
+    coding = 
+      case_when(
+        COMPLEX == "Complex I" | COMPLEX == "Complex III" | COMPLEX == "Complex IV" | COMPLEX == "Complex V" ~ "coding",
+        TRUE ~ "noncoding"
+      ),
+    type = 
+      ifelse(coding == "coding" & is.na(mutation_nonsynonymous), "SYN", NA),
+    type = 
+      ifelse(mutation_nonsynonymous == "NONSYN" & !is.na(mutation_nonsynonymous), "NONSYN", type),
+    type = 
+      ifelse(mutation_stop == "STOP" & !is.na(mutation_stop), "STOP", type),
+    type = 
+      factor(
+        type, 
+        levels = c("SYN", "NONSYN", "STOP"),
+        labels = c("Synonymous", "Nonsynonymous", "Nonsense")
+      )
+  ) %>%
+  ggplot() +
+  geom_boxplot(
+    aes(x = COMPLEX, y = Median_AF_Het, fill = type)
+    ) +
+  scale_x_discrete("") + 
+  scale_y_continuous("Median VAF") +
+  scale_fill_manual(
+    name = "Type",
+    values = c("#0571B0", "#F4A582", "#CA0020"),
+    labels = c("Synonymous", "Nonsynonymous", "Nonsense", "Non-coding")
+    ) + 
+  theme_classic() +
+  theme(
+    legend.title = element_text(size = 12, face = "bold"),
+    legend.text = element_text(size = 12),
+    axis.title = element_text(size = 12, face = "bold"),
+    axis.text = element_text(size = 10),
+    axis.text.x = element_text(angle = 15, vjust = 0.5, face = "bold")
+    )
+fig2f
+```
+
+## Number of participants in each haplogroup  
+```{r analysis_01 figure2g}
+fig2g <- mito %>%
+  group_by(hap) %>%
+  mutate(count = n()) %>%
+  ungroup() %>%
+  ggplot() +
+  geom_bar(aes(x = reorder(hap, -count))) +
+  scale_x_discrete("Haplogroup") +
+  scale_y_continuous("Number", 
+                     expand = c(0, 0)) +
+  theme_classic() +
+  theme(axis.title = element_text(size = 12, face = "bold"),
+        axis.text = element_text(size = 10))
+fig2g
+```
+
+## Mean heteroplasmy count by haplogroup  
+```{r analysis_01 figure2h}
+fig2h <- mito %>%
+  mutate(
+    hap = factor(
+      hap, 
+      levels = c("H", "U", "JT", "N", "R0", "L", "M", "R")
+    )
+  ) %>%
+  group_by(hap) %>%
+  summarise(
+    n = n(),
+    mean = mean(het_count),
+    se = sd(het_count),
+    lci = mean - 1.96*se/sqrt(n),
+    uci = mean + 1.96*se/sqrt(n)
+  ) %>%
+  ungroup() %>%
+  ggplot() +
+  geom_pointrange(
+    aes(x = hap, y = mean, ymin = lci, ymax = uci)
+    ) +
+  scale_x_discrete("Haplogroup") +
+  scale_y_continuous(
+    "Mean heteroplasmy count \n (95% CI)", 
+    breaks = c(0.3, 0.325, 0.35, 0.375, 0.4),
+    labels = c("0.300", "0.325", "0.350", "0.375", "0.400"),
+    limits = c(0.3, 0.4)
+    ) +
+  theme_classic() +
+  theme(
+    axis.title = element_text(size = 12, face = "bold"),
+    axis.text = element_text(size = 10)
+    )  
+fig2h
+```
+
+## Combine plots  
+```{r, fig.width=18, fig.height=15}
+fig2 <- ggpubr::ggarrange(
+  fig2a, fig2b, fig2c, fig2d, fig2e, fig2f, fig2g, fig2h,
+  nrow = 4, ncol = 2,
+  labels = c("a", "b", "c", "d", "e", "f", "g", "h"),
+  align = "h"
+)
+ggsave("ukb_heteroplasmy_outcomes_fig2.tiff", plot = fig2, height = 15, width = 18)
+```
+
+# Regression analysis for heteroplasmy count by haplogroup  
+```{r analysis_01 het count haplogroup}
+summary(lm(het_count ~ hap, data = mito))
+summary(MASS::glm.nb(het_count ~ relevel(factor(haplogroup, ordered = F), ref = "H"), data = mito))
+
+nested <- MASS::glm.nb(het_count ~ 1, data = mito)
+full <- MASS::glm.nb(het_count ~ hap, data = mito)
+lmtest::lrtest(nested, full)
+anova(nested, full)
+```
+
+
