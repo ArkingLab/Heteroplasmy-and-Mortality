@@ -1,0 +1,1184 @@
+---
+title: "UKB - Heteroplasmy and mortality - data cleaning"
+subtitle: "001 - baseline characteristics"
+author: "Yun Soo Hong"
+date: '`r format(Sys.Date(), "%B %d, %Y")`'
+output: 
+  html_document:
+    toc: true
+    toc_float: 
+      collapsed: false
+      smooth_scroll: false
+    pandoc_args: [
+    "--number-sections",
+    "--number-offset=0"
+    ]
+fontsize: 11pt
+---
+
+# Set up  
+* This program reads in the data set of baseline characteristics downloaded from the UK Biobank RAP on June 18, 2022  (`mt_heteroplasmy_baseline_participant_2022_06_18.csv`), cleans the raw data, and saves the object into an .rds ("ukb_heteroplasmy_mortality_01_baseline.rds"). For categorical variables, those ending with `_na` use `NA` for missing values.    
+  * Step 1: Read in data  
+  * Step 2: Rename variables
+    * After renaming, remove unused variables  
+  * Step 3: Generate new variables    
+  * Step 4: Save data set  
+  
+## Versions of R and packages  
+```{r clean_01 set up, include = FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Load libraries
+```{r clean_01 load libraries, echo = TRUE, message = FALSE}
+library(tidyverse)
+library(magrittr)
+library(lubridate)
+library(stringr)
+library(data.table)
+```
+
+## Print out settings  
+```{r clean_01 print settings}
+options(tibble.print_max = 100)
+options(pillar.sigfig = 5)
+```
+
+# Load data  
+```{r clean_01 load data}
+baseline <- fread("../../data/mt_heteroplasmy_baseline_participant_2022_06_18.csv") %>%
+  as.data.frame()
+baseline
+```
+
+# Rename variables  
+## Participant ID
+```{r clean_01 id}
+baseline %<>%
+  mutate(eid = as.character(eid)) %>%
+  rename(id = eid)
+```
+
+## Age at baseline  
+```{r clean_01 age}
+baseline %<>%
+  rename(age = `21022-0.0`)
+```
+
+## Year and month of birth  
+```{r clean_01 birth}
+baseline %<>%
+  rename(yob = `34-0.0`,
+         mob = `52-0.0`)
+```
+
+## Sex  
+```{r clean_01 sex}
+table(baseline$`31-0.0`, useNA = "ifany")
+
+baseline %<>%
+  rename(sex = `31-0.0`) %>%
+  mutate(sex = 
+           case_when(
+             sex == 0 ~ "women", 
+             sex == 1 ~ "men"),
+         sex = 
+           factor(
+             sex, 
+             levels = c("women", "men"),
+             labels = c("women", "men"))
+         )
+```
+
+## Race / ethnicity  
+```{r clean_01 ethnicity}
+baseline %<>%
+  rename(ethnicity = `21000-0.0`)
+table(baseline$ethnicity, useNA = "ifany")
+
+baseline %<>%
+  mutate(
+    ethnicity_new = case_when(
+      ethnicity == 1 | ethnicity == 1001 | ethnicity == 1002 | ethnicity == 1003 ~ 1,
+      ethnicity == 2 | ethnicity == 2001 | ethnicity == 2002 | ethnicity == 2003 | ethnicity == 2004 ~ 2,
+      ethnicity == 3 | ethnicity == 3001 | ethnicity == 3002 | ethnicity == 3003 | ethnicity == 3004 ~ 3,
+      ethnicity == 4 | ethnicity == 4001 | ethnicity == 4002 | ethnicity == 4003 ~ 4,
+      ethnicity == 5 ~ 5,
+      ethnicity == 6 ~ 6,
+      TRUE ~ as.numeric(NA)
+    ),
+    race = factor(
+      ethnicity_new,
+      levels = c(1, 2, 3, 4, 5, 6),
+      labels = c("white", "mixed", "asian", "black", "chinese", "others")
+    ),
+    race_na = fct_recode(
+      race,
+      "white" = "white", 
+      "black" = "black", 
+      "others" = "others", 
+      "others" = "mixed", 
+      "asian" = "asian", 
+      "asian" = "chinese"
+    ),
+    race_na = factor(
+      race_na, 
+      levels = c("white", "black", "asian", "others")
+    ),
+    race_new = 
+      fct_explicit_na(
+        race_na, na_level = "missing"
+      )
+  ) 
+
+table(baseline$race, useNA = "ifany")
+table(baseline$race_na, useNA = "ifany")
+table(baseline$race_new, useNA = "ifany")
+```
+
+## Date of visit  
+```{r clean_01 dov}
+baseline %<>%
+  rename(dov = `53-0.0`) %>%
+  mutate(dov = as.Date(dov))
+```
+
+## Date and time of blood collection  
+```{r clean_01 dobl}
+baseline %<>%
+  rename(dobl = `3166-0.0`) %>%
+  mutate(dobl = as.Date(dobl))
+```
+
+## Center  
+```{r clean_01 center}
+baseline %<>%
+  rename(center = `54-0.0`) %>%
+  mutate(center = factor(center))
+```
+
+## Current employment  
+* Use 2 variables: `6142-0.0` and `20119-0.0`  
+
+```{r clean_01 current employment}
+table(baseline$`6142-0.0`, useNA = "ifany")
+
+baseline %<>%
+  rename(cur_emp = `6142-0.0`) %>%
+  mutate(cur_emp = 
+           case_when(
+             cur_emp == "-7" ~ "none of the above",
+             cur_emp == "-3" ~ "prefer not to answer",
+             cur_emp == "1" ~ "paid employment",
+             cur_emp == "2" ~ "retired",
+             cur_emp == "3" ~ "looking after home/family",
+             cur_emp == "4" ~ "unable to work", 
+             cur_emp == "5" ~ "unemployed", 
+             cur_emp == "6" ~ "unpaid or voluntary work", 
+             cur_emp == "7" ~ "student",
+             # if participant answered more than 1, we select the one coded using the smallest value
+             grepl("1", cur_emp) ~ "paid employment",
+             grepl("2", cur_emp) ~ "retired",
+             grepl("3", cur_emp) ~ "looking after home/family",
+             grepl("4", cur_emp) ~ "unable to work",
+             grepl("5", cur_emp) ~ "unemployed",
+             grepl("6", cur_emp) ~ "unpaid or voluntary work", 
+             grepl("7", cur_emp) ~ "student")
+         )
+
+baseline %>%
+  janitor::tabyl(cur_emp)
+
+# update the current employment status using the `20119-0.0` ("Current employment status (corrected)")
+table(baseline$`20119-0.0`, useNA = "ifany")
+
+baseline %<>%
+  mutate(cur_emp =
+           case_when(
+             cur_emp == "none of the above"  | `20119-0.0` == "-7" ~ "none of the above",
+             cur_emp == "prefer not to answer" | `20119-0.0` == "-3" ~ "prefer not to answer",
+             cur_emp == "paid employment" ~ "paid employment", 
+             cur_emp == "retired" | `20119-0.0` == "2" ~ "retired",
+             cur_emp == "looking after home/family" | `20119-0.0` == "3" ~ "looking after home/family",
+             cur_emp == "unable to work" | `20119-0.0` == "4" ~ "unable to work",
+             cur_emp == "unemployed" | `20119-0.0` == "5" ~ "unemployed",
+             cur_emp == "unpaid or voluntary work" | `20119-0.0` == "6" ~ "unpaid or voluntary work",
+             cur_emp == "student" | `20119-0.0` == "7" ~ "student"
+           ),
+         cur_emp = 
+           factor(
+             cur_emp,
+             levels = c("paid employment", "retired", "looking after home/family", "unable to work",
+                        "unemployed", "unpaid or voluntary work", "student", "none of the above", "prefer not to answer"),
+             labels = c("paid employment", "retired", "looking after home/family", "unable to work",
+                        "unemployed", "unpaid or voluntary work", "student", "none of the above", "prefer not to answer"))
+         ) %>%
+  dplyr::select(-`20119-0.0`)
+
+baseline %>%
+  janitor::tabyl(cur_emp)
+
+# collapsed version of cur_emp
+# people who did not answer or responded "prefer not to answer" will be coded as missing 
+baseline %<>%
+  mutate(cur_emp_na = 
+           fct_recode(
+             cur_emp,
+             "yes" = "paid employment",
+             "yes" = "unpaid or voluntary work", 
+             "no" = "retired",
+             "no" = "looking after home/family",
+             "no" = "unable to work",
+             "no" = "unemployed",
+             "no" = "student", 
+             "none of the above" = "none of the above"
+           ),
+         cur_emp_na = 
+           factor(
+             cur_emp_na,
+             levels = c("no", "yes", "none of the above"),
+             labels = c("no", "yes", "none of the above")
+           ),
+         cur_emp_col = 
+           fct_explicit_na(
+             cur_emp_na,
+             na_level = "missing")
+         ) %>%
+  dplyr::select(id, age, yob, mob, sex, cur_emp, cur_emp_na, cur_emp_col, everything())
+
+table(baseline$cur_emp_na, useNA = "ifany")
+table(baseline$cur_emp_col, useNA = "ifany")
+```
+
+## Education level   
+```{r clean_01 education}
+table(baseline$`6138-0.0`, useNA = "ifany")
+
+baseline %<>%
+  rename(edu_level = `6138-0.0`) %>%
+  mutate(edu_level = 
+           case_when(
+             edu_level == "-7" ~ "none of the above",
+             edu_level == "-3" ~ "prefer not to answer",
+             edu_level == "1" ~ "college or university degree",
+             edu_level == "2" ~ "A or AS levels",
+             edu_level == "3" ~ "O level or GCSEs",
+             edu_level == "4" ~ "CSEs", 
+             edu_level == "5" ~ "NVQ or HND or HNC", 
+             edu_level == "6" ~ "other professional qualifications",
+             # if participant answered more than 1, we select the one coded using the smallest value
+             grepl("1", edu_level) ~ "college or university degree",
+             grepl("2", edu_level) ~ "A or AS levels",
+             grepl("3", edu_level) ~ "O level or GCSEs",
+             grepl("4", edu_level) ~ "CSEs",
+             grepl("5", edu_level) ~ "NVQ or HND or HNC",
+             grepl("6", edu_level) ~ "other professional qualifications"),
+         edu_level = 
+           factor(
+             edu_level,
+             levels = c("college or university degree", "A or AS levels", "O level or GCSEs", "CSEs", 
+                        "NVQ or HND or HNC", "other professional qualifications", "none of the above", "prefer not to answer"),
+             labels = c("college or university degree", "A or AS levels", "O level or GCSEs", "CSEs", 
+                        "NVQ or HND or HNC", "other professional qualifications", "none of the above", "prefer not to answer")
+           )
+         )
+
+baseline %>%
+  janitor::tabyl(edu_level)
+
+# collapsed version of edu_level
+# people who did not answer or responded "prefer not to answer" will be coded missing 
+baseline %<>%
+  mutate(edu_level_na = 
+           fct_recode(
+             edu_level,
+             "college or university degree" = "college or university degree",
+             "less than college" = "A or AS levels", 
+             "less than college" = "O level or GCSEs",
+             "less than college" = "CSEs",
+             "professional degree" = "NVQ or HND or HNC",
+             "professional degree" = "other professional qualifications",
+             "none of the above" = "none of the above"
+           ),
+         edu_level_na = 
+           factor(
+             edu_level_na,
+             levels = c("less than college", "college or university degree", "professional degree", "none of the above"),
+             labels = c("less than college", "college or university degree", "professional degree", "none of the above")
+           ),
+         edu_level_col = 
+           fct_explicit_na(
+             edu_level_na,
+             na_level = "missing")
+         ) %>%
+  dplyr::select(id, age, yob, mob, sex, cur_emp, cur_emp_na, cur_emp_col, edu_level, edu_level_na, edu_level_col, everything())
+
+table(baseline$edu_level_na, useNA = "ifany")
+table(baseline$edu_level_col, useNA = "ifany")
+```
+
+## Average household income    
+```{r clean_01 income}
+table(baseline$`738-0.0`, useNA = "ifany")
+
+baseline %<>%
+  rename(income = `738-0.0`) %>%
+  mutate(income_na = 
+           case_when(
+             income == "-1" ~ "",
+             income == "-3" ~ "",
+             income == "1" ~ "less than 18000",
+             income == "2" ~ "18000 to 30999",
+             income == "3" ~ "31000 to 51999",
+             income == "4" ~ "52000 to 100000", 
+             income == "5" ~ "greater than 100000"),
+         income_na = 
+           factor(
+             income_na,
+             levels = c("less than 18000", "18000 to 30999", "31000 to 51999", "52000 to 100000", "greater than 100000"),
+             labels = c("less than 18000", "18000 to 30999", "31000 to 51999", "52000 to 100000", "greater than 100000")
+           ),
+         income = 
+           fct_explicit_na(
+             income_na,
+             na_level = "missing")
+         )
+
+table(baseline$income_na, useNA = "ifany")
+table(baseline$income, useNA = "ifany")
+```
+
+## Physical activity  
+### IPAQ activity group  
+```{r clean_01 ipaq}
+table(baseline$`22032-0.0`, useNA = "ifany")
+
+baseline %<>%
+  rename(ipaq_cat = `22032-0.0`) %>%
+  mutate(ipaq_cat_na =
+           factor(
+             ipaq_cat,
+             levels = c(0:2),
+             labels = c("low", "moderate", "high")),
+         ipaq_cat = 
+           fct_explicit_na(
+             ipaq_cat_na,
+             na_level = "missing")) %>%
+  dplyr::select(id, age, yob, mob, sex, cur_emp, cur_emp_na, cur_emp_col, edu_level, edu_level_na, edu_level_col, ipaq_cat_na, ipaq_cat,
+                everything())
+
+table(baseline$ipaq_cat_na, useNA = "ifany")
+table(baseline$ipaq_cat, useNA = "ifany")
+```
+
+### Above moderate/vigorous recommendation
+```{r clean_01 pa moderate to vigorous}
+table(baseline$`22035-0.0`, useNA = "ifany")
+
+baseline %<>%
+  rename(pa_mod_vig = `22035-0.0`) %>%
+  mutate(pa_mod_vig_na =
+           factor(
+             pa_mod_vig,
+             levels = c(0, 1), 
+             labels = c("no", "yes")
+           ),
+         pa_mod_vig = 
+           fct_explicit_na(
+             pa_mod_vig_na,
+             na_level = "missing"
+           )) %>%
+  dplyr::select(id, age, yob, mob, sex, cur_emp, cur_emp_na, cur_emp_col, edu_level, edu_level_na, edu_level_col, ipaq_cat_na, ipaq_cat,  
+                pa_mod_vig_na, pa_mod_vig, everything())
+
+table(baseline$pa_mod_vig_na, useNA = "ifany")
+table(baseline$pa_mod_vig, useNA = "ifany")
+```
+
+### Above moderate/vigorous/walking recommendations  
+```{r clean_01 pa walking moderate vigorous}
+table(baseline$`22036-0.0`, useNA = "ifany")
+
+baseline %<>%
+  rename(pa_mod_vig_walk = `22036-0.0`) %>%
+  mutate(pa_mod_vig_walk_na =
+           factor(
+             pa_mod_vig_walk,
+             levels = c(0, 1), 
+             labels = c("no", "yes")
+           ),
+         pa_mod_vig_walk = 
+           fct_explicit_na(
+             pa_mod_vig_walk_na,
+             na_level = "missing"
+           )) %>%
+  dplyr::select(id, age, yob, mob, sex, cur_emp, cur_emp_na, cur_emp_col, edu_level, edu_level_na, edu_level_col, ipaq_cat_na, ipaq_cat,  
+                pa_mod_vig_na, pa_mod_vig, pa_mod_vig_walk_na, pa_mod_vig_walk, everything())
+
+table(baseline$pa_mod_vig_walk_na, useNA = "ifany")
+table(baseline$pa_mod_vig_walk, useNA = "ifany")
+```
+
+### MET minutes per week for walking, for moderate, vigorous activity, and for all activity     
+```{r clean_01 met minutes}
+baseline %<>%
+  rename(
+    met_min_walk = `22037-0.0`,
+    met_min_mod = `22038-0.0`, 
+    met_min_vig = `22039-0.0`,
+    met_min_total = `22040-0.0`
+    )
+```
+
+### Summed days and minutes of activity  
+```{r clean_01 pa summed}
+baseline %<>%
+  rename(
+    pa_days = `22033-0.0`,
+    pa_minutes = `22034-0.0`
+    )
+```
+
+## Smoking  
+### Ever smoked  
+```{r clean_01 ever smoked}
+table(baseline$`20160-0.0`, useNA = "ifany")
+
+baseline %<>%
+  rename(smk_ever = `20160-0.0`) %>%
+  mutate(smk_ever_na =
+           factor(
+             smk_ever,
+             levels = c(0, 1), 
+             labels = c("no", "yes")
+           ),
+         smk_ever = 
+           fct_explicit_na(
+             smk_ever_na,
+             na_level = "missing"
+           )) %>%
+  dplyr::select(id, age, yob, mob, sex, cur_emp, cur_emp_na, cur_emp_col, edu_level, edu_level_na, edu_level_col, ipaq_cat_na, ipaq_cat,  
+                pa_mod_vig_na, pa_mod_vig, pa_mod_vig_walk_na, pa_mod_vig_walk, met_min_mod, met_min_vig, met_min_walk, met_min_total, 
+                pa_days, pa_minutes, smk_ever_na, smk_ever, everything())
+
+table(baseline$smk_ever_na, useNA = "ifany")
+table(baseline$smk_ever, useNA = "ifany")
+```
+
+### Pack years of smoking  
+```{r clean_01 smk pack-years}
+baseline %<>%
+  rename(smk_py = `20161-0.0`)
+```
+
+### Pack years of adult smoking as proportion of life span exposed to smoking  
+```{r clean_01 smk proportion}
+baseline %<>%
+  rename(smk_prop = `20162-0.0`)
+```
+
+### Smoking status  
+```{r clean_01 smk}
+table(baseline$`20116-0.0`, useNA = "ifany")
+
+baseline %<>%
+  rename(smk = `20116-0.0`) %>%
+  mutate(smk_na = 
+           factor(
+             smk,
+             levels = c(0:2),
+             labels = c("never", "former", "current")
+           ),
+         smk = 
+           fct_explicit_na(
+             smk_na,
+             na_level = "missing"
+           ))
+
+table(baseline$smk_na, useNA = "ifany")
+table(baseline$smk, useNA = "ifany")
+```
+
+## Alcohol intake  
+### Alcohol drinker status  
+```{r clean_01 alc}
+table(baseline$`20117-0.0`, useNA = "ifany")
+
+baseline %<>%
+  rename(alc = `20117-0.0`) %>%
+  mutate(alc_na = 
+           factor(
+             alc,
+             levels = c(0:2),
+             labels = c("never", "former", "current")
+           ),
+         alc = 
+           fct_explicit_na(
+             alc_na,
+             na_level = "missing"
+           ))
+
+table(baseline$alc_na, useNA = "ifany")
+table(baseline$alc, useNA = "ifany")
+```
+
+### Alcohol intake frequency  
+```{r clean_01 alc freq}
+table(baseline$`1558-0.0`, useNA = "ifany")
+
+baseline %<>%
+  rename(alc_freq = `1558-0.0`) %>%
+  mutate(alc_freq_na = 
+           factor(
+             alc_freq,
+             levels = c(6:1),
+             labels = c("never", "special occasions only", "one to three times a month", 
+                        "once or twice a week", "three or four times a week", "daily or almost daily")
+           ),
+         alc_freq = 
+           fct_explicit_na(
+             alc_freq_na,
+             na_level = "missing"
+           ))
+
+table(baseline$alc_freq_na, useNA = "ifany")
+table(baseline$alc_freq, useNA = "ifany")
+```
+
+## Medication  
+* `6177-0.0` field is for men and `6153-0.0` field is for women  
+* The responses from both fields were combined to create each variable for statin, bp medication, insulin, HRT, and OC separately.  
+
+```{r clean_01 med}
+table(baseline$`6177-0.0`, useNA = "ifany")
+table(baseline$`6153-0.0`, useNA = "ifany")
+```
+
+### Statin  
+```{r clean_01 statin}
+baseline %<>%
+  mutate(statin = 
+           case_when(
+             `6177-0.0` == "-1" | `6153-0.0` == "-1" ~ "",
+             `6177-0.0` == "-3" | `6153-0.0` == "-3" ~ "",
+             `6177-0.0` == "-7" | `6153-0.0` == "-7" ~ "0",
+             grepl("1", `6177-0.0`) ~ "1", 
+             grepl("1", `6153-0.0`) ~ "1",
+             TRUE ~ "0"
+           ), 
+         statin = as.numeric(statin),
+         statin_na = 
+           factor(
+             statin,
+             levels = c(0, 1),
+             labels = c("no", "yes")
+           ),
+         statin = 
+           fct_explicit_na(
+             statin_na,
+             na_level = "missing"
+           ))
+
+table(baseline$statin_na, useNA = "ifany")
+table(baseline$statin, useNA = "ifany")
+
+baseline %>%
+  janitor::tabyl(statin, sex)
+```
+
+### Blood pressure medication  
+```{r clean_01 bp med}
+baseline %<>%
+  mutate(bp_med = 
+           case_when(
+             `6177-0.0` == "-1" | `6153-0.0` == "-1" ~ "",
+             `6177-0.0` == "-3" | `6153-0.0` == "-3" ~ "",
+             `6177-0.0` == "-7" | `6153-0.0` == "-7" ~ "0",
+             grepl("2", `6177-0.0`) ~ "1", 
+             grepl("2", `6153-0.0`) ~ "1",
+             TRUE ~ "0"
+           ), 
+         bp_med = as.numeric(bp_med), 
+         bp_med_na = 
+           factor(
+             bp_med,
+             levels = c(0, 1),
+             labels = c("no", "yes")
+           ),
+         bp_med = 
+           fct_explicit_na(
+             bp_med_na,
+             na_level = "missing"
+           ))
+
+table(baseline$bp_med_na, useNA = "ifany")
+table(baseline$bp_med, useNA = "ifany")
+
+baseline %>%
+  janitor::tabyl(bp_med, sex)
+```
+
+### Insulin  
+```{r clean_01 insulin}
+baseline %<>%
+  mutate(insulin = 
+           case_when(
+             `6177-0.0` == "-1" | `6153-0.0` == "-1" ~ "",
+             `6177-0.0` == "-3" | `6153-0.0` == "-3" ~ "",
+             `6177-0.0` == "-7" | `6153-0.0` == "-7" ~ "0",
+             grepl("3", `6177-0.0`) ~ "1", 
+             grepl("3", `6153-0.0`) ~ "1",
+             TRUE ~ "0"
+           ), 
+         insulin = as.numeric(insulin),
+         insulin_na = 
+           factor(
+             insulin,
+             levels = c("0", "1"),
+             labels = c("no", "yes")
+           ),
+         insulin = 
+           fct_explicit_na(
+             insulin_na,
+             na_level = "missing"
+           ))
+
+table(baseline$insulin_na, useNA = "ifany")
+table(baseline$insulin, useNA = "ifany")
+
+baseline %>%
+  janitor::tabyl(insulin, sex)
+```
+
+### Hormone replacement therapy    
+```{r clean_01 hrt}
+baseline %<>%
+  mutate(hrt = 
+           case_when(
+             sex == "men" ~ "",
+             `6153-0.0` == "-1" ~ "",
+             `6153-0.0` == "-3" ~ "",
+             `6153-0.0` == "-7" ~ "0",
+             grepl("4", `6153-0.0`) ~ "1", 
+             TRUE ~ "0"
+           ), 
+         hrt = as.numeric(hrt),
+         hrt_na = 
+           factor(
+             hrt,
+             levels = c("0", "1"),
+             labels = c("no", "yes")
+           ),
+         hrt = 
+           fct_explicit_na(
+             hrt_na,
+             na_level = "missing"
+           ))
+
+table(baseline$hrt_na, useNA = "ifany")
+table(baseline$hrt, useNA = "ifany")
+
+baseline %>%
+  janitor::tabyl(hrt, sex)
+```
+
+### Oral contraceptive pill or minipill  
+```{r clean_01 oc}
+baseline %<>%
+  mutate(oc = 
+           case_when(
+             sex == "men" ~ "",
+             `6153-0.0` == "-1" ~ "",
+             `6153-0.0` == "-3" ~ "",
+             `6153-0.0` == "-7" ~ "0",
+             grepl("5", `6153-0.0`) ~ "1", 
+             TRUE ~ "0"
+           ), 
+         oc = as.numeric(oc),
+         oc_na = 
+           factor(
+             oc,
+             levels = c("0", "1"),
+             labels = c("no", "yes")
+           ),
+         oc = 
+           fct_explicit_na(
+             oc_na,
+             na_level = "missing"
+           ))
+
+table(baseline$oc_na, useNA = "ifany")
+table(baseline$oc, useNA = "ifany")
+
+baseline %>%
+  janitor::tabyl(oc, sex)
+```
+
+## Blood pressure  
+```{r clean_01 bp}
+baseline %<>%
+  rename(
+    dbp_1 = `4079-0.0`,
+    dbp_2 = `4079-0.1`,
+    sbp_1 = `4080-0.0`,
+    sbp_2 = `4080-0.1`
+    )
+```
+
+## Physical measures
+### Height  
+```{r clean_01 height}
+baseline %<>%
+  rename(height = `50-0.0`)
+```
+
+### Weight  
+```{r clean_01 weight}
+baseline %<>%
+  rename(weight = `21002-0.0`)
+```
+
+### Body mass index  
+```{r clean_01 bmi}
+baseline %<>%
+  rename(bmi = `21001-0.0`)
+```
+
+## Blood cell counts and percentages  
+### White blood cells and diff counts  
+```{r clean_01 wbc diff}
+baseline %<>%
+  rename(
+    wbc = `30000-0.0`,
+    neutro = `30140-0.0`,
+    neutro_pct = `30200-0.0`,
+    lymph = `30120-0.0`, 
+    lymph_pct = `30180-0.0`,
+    mono = `30130-0.0`,
+    mono_pct = `30190-0.0`,
+    baso = `30160-0.0`, 
+    baso_pct = `30220-0.0`,
+    eos = `30150-0.0`, 
+    eos_pct = `30210-0.0`
+    ) %>%
+  mutate(
+    ln_wbc = log(wbc + 1),
+    ln_neutro = log(neutro + 1),
+    ln_lymph = log(lymph + 1),
+    ln_mono = log(mono + 1),
+    ln_baso = log(baso + 1),
+    ln_eos = log(eos + 1)
+    )
+```
+
+### Red blood cells  
+```{r clean_01 rbc}
+baseline %<>%
+  rename(rbc = `30010-0.0`,
+         rbcdw = `30070-0.0`,
+         n_rbc = `30170-0.0`,
+         n_rbc_pct = `30230-0.0`) %>%
+  mutate(ln_rbc = log(rbc + 1))
+```
+
+### Hematocrit, Hb  
+```{r clean_01 rbc features}
+baseline %<>%
+  rename(hb = `30020-0.0`, 
+         hct = `30030-0.0`, 
+         mcv = `30040-0.0`,
+         mch = `30050-0.0`,
+         mchc = `30060-0.0`)
+```
+
+### Reticulocytes  
+```{r clean_01 reti}
+baseline %<>%
+  rename(reti = `30250-0.0`,
+         reti_pct = `30240-0.0`,
+         hls_reti = `30300-0.0`, 
+         hls_reti_pct = `30290-0.0`,
+         reti_immature = `30280-0.0`,
+         mrv = `30260-0.0`,
+         mscv = `30270-0.0`)
+```
+
+### Platelets  
+```{r clean_01 plt}
+baseline %<>%
+  rename(plt = `30080-0.0`,
+         platcrit = `30090-0.0`,
+         mpv = `30100-0.0`,
+         pdw = `30110-0.0`) %>%
+  mutate(ln_plt = log(plt + 1))
+```
+
+## Blood chemistry  
+### Liver function tests  
+```{r clean_01 lft}
+baseline %<>%
+  rename(albumin = `30600-0.0`, 
+         alp = `30610-0.0`,
+         alt = `30620-0.0`,
+         ast = `30650-0.0`, 
+         dbil = `30660-0.0`,
+         ggt = `30730-0.0`,
+         tbil = `30840-0.0`,
+         tprotein = `30860-0.0`)
+```
+
+### Kidney function tests  
+```{r clean_01 kft}
+baseline %<>%
+  rename(cr = `30700-0.0`,
+         cystatin_c = `30720-0.0`,
+         urea = `30670-0.0`)
+```
+
+### Glucose and HbA1c  
+```{r clean_01 gluc}
+baseline %<>%
+  rename(glucose = `30740-0.0`,
+         hba1c = `30750-0.0`)
+```
+
+### Lipids and lipoprotiens  
+```{r clean_01 lipids}
+baseline %<>%
+  rename(apoa = `30630-0.0`, 
+         apob = `30640-0.0`,
+         cholesterol = `30690-0.0`,
+         hdl = `30760-0.0`,
+         ldl_direct = `30780-0.0`,
+         lipoprotein_a = `30790-0.0`,
+         trig = `30870-0.0`)
+```
+
+### Others   
+```{r clean_01 others} 
+baseline %<>%
+  rename(calcium = `30680-0.0`,
+         igf1 = `30770-0.0`,
+         estradiol = `30800-0.0`,
+         phosphate = `30810-0.0`,
+         rf = `30820-0.0`,
+         shbg = `30830-0.0`,
+         testosterone = `30850-0.0`, 
+         urate = `30880-0.0`,
+         vitd = `30890-0.0`,
+         crp = `30710-0.0`)
+```
+
+## Infectious disease labs  
+### Ebstein-Barr virus  
+```{r clean_01 ebv}
+table(baseline$`23053-0.0`, useNA = "ifany")
+
+baseline %<>%
+  rename(ebv = `23053-0.0`) %>%
+  mutate(ebv =
+           factor(
+             ebv,
+             levels = c(0, 1), 
+             labels = c("no", "yes")
+           ),
+         ebv = 
+           fct_explicit_na(
+             ebv,
+             na_level = "missing"
+           )) 
+
+baseline %>%
+  janitor::tabyl(ebv)
+```
+
+### CMV  
+```{r clean_01 cmv}
+table(baseline$`23054-0.0`, useNA = "ifany")
+
+baseline %<>%
+  rename(cmv = `23054-0.0`) %>%
+  mutate(cmv =
+           factor(
+             cmv,
+             levels = c(0, 1), 
+             labels = c("no", "yes")
+           ),
+         cmv = 
+           fct_explicit_na(
+             cmv,
+             na_level = "missing"
+           )) 
+
+baseline %>%
+  janitor::tabyl(cmv)
+```
+
+## Self-reported health outcomes  
+```{r clean_01 dx_self}
+table(baseline$`6150-0.0`, useNA = "ifany")
+```
+
+### Heart attack diagnosed by doctor  
+```{r clean_01 dx_self_heart_attack}
+baseline %<>%
+  mutate(dx_self_heart_attack = 
+           case_when(
+             grepl("1", `6150-0.0`) ~ "1", 
+             grepl("-3", `6150-0.0`) ~ "", 
+             `6150-0.0` == "" ~ "",
+             TRUE ~ "0"
+           ), 
+         dx_self_heart_attack =
+           as.numeric(dx_self_heart_attack), 
+         dx_self_heart_attack = 
+           factor(
+             dx_self_heart_attack,
+             levels = c(0, 1),
+             labels = c("no", "yes")
+           ),
+         dx_self_heart_attack = 
+           fct_explicit_na(
+             dx_self_heart_attack,
+             na_level = "missing"
+           ))
+
+baseline %>%
+  janitor::tabyl(dx_self_heart_attack)
+
+baseline %<>%
+  rename(dx_self_age_heart_attack = `3894-0.0`)
+```
+
+### Angina  
+```{r clean_01 dx_self_angina}
+baseline %<>%
+  mutate(dx_self_angina = 
+           case_when(
+             grepl("2", `6150-0.0`) ~ "1", 
+             grepl("-3", `6150-0.0`) ~ "",
+             `6150-0.0` == "" ~ "", 
+             TRUE ~ "0"
+           ), 
+         dx_self_angina =
+           as.numeric(dx_self_angina),
+         dx_self_angina = 
+           factor(
+             dx_self_angina,
+             levels = c(0, 1),
+             labels = c("no", "yes")
+           ),
+         dx_self_angina = 
+           fct_explicit_na(
+             dx_self_angina,
+             na_level = "missing"
+           ))
+
+baseline %>%
+  janitor::tabyl(dx_self_angina)
+
+baseline %<>%
+  rename(dx_self_age_angina = `3627-0.0`)
+```
+
+### Stroke  
+```{r clean_01 dx_self_stroke}
+baseline %<>%
+  mutate(dx_self_stroke = 
+           case_when(
+             # the order of grepl is different here because "3" run before "-3" ends up recoding "-3" as dx_self_stroke == 1
+             grepl("-3", `6150-0.0`) ~ "",
+             grepl("3", `6150-0.0`) ~ "1", 
+             `6150-0.0` == "" ~ "", 
+             TRUE ~ "0"
+           ), 
+         dx_self_stroke =
+           as.numeric(dx_self_stroke),
+         dx_self_stroke = 
+           factor(
+             dx_self_stroke,
+             levels = c(0, 1),
+             labels = c("no", "yes")
+           ),
+         dx_self_stroke = 
+           fct_explicit_na(
+             dx_self_stroke,
+             na_level = "missing"
+           ))
+
+baseline %>%
+  janitor::tabyl(dx_self_stroke)
+
+baseline %<>%
+  rename(dx_self_age_stroke = `4056-0.0`)
+```
+
+### High blood pressure  
+```{r clean_01 self_dx_htn}
+baseline %<>%
+  mutate(dx_self_htn = 
+           case_when(
+             grepl("4", `6150-0.0`) ~ "1", 
+             grepl("-3", `6150-0.0`) ~ "",
+             `6150-0.0` == "" ~ "",
+             TRUE ~ "0"
+           ), 
+         dx_self_htn =
+           as.numeric(dx_self_htn),
+         dx_self_htn = 
+           factor(
+             dx_self_htn,
+             levels = c(0, 1),
+             labels = c("no", "yes")
+           ),
+         dx_self_htn = 
+           fct_explicit_na(
+             dx_self_htn,
+             na_level = "missing"
+           ))
+
+baseline %>%
+  janitor::tabyl(dx_self_htn)
+
+baseline %<>%
+  rename(dx_self_age_htn = `2966-0.0`)
+```
+
+### Diabetes  
+```{r clean_01 self_dx_diabetes}
+table(baseline$`2443-0.0`, useNA = "ifany")
+
+baseline %<>%
+  mutate(dx_self_diabetes = 
+           case_when(
+             `2443-0.0` == -1 | `2443-0.0` == -3 ~ "", 
+             grepl("1", `2443-0.0`) ~ "1", 
+             grepl("0", `2443-0.0`) ~ "0",
+             TRUE ~ ""
+           ), 
+         dx_self_diabetes =
+           as.numeric(dx_self_diabetes),
+         dx_self_diabetes = 
+           factor(
+             dx_self_diabetes,
+             levels = c(0, 1),
+             labels = c("no", "yes")
+           ),
+         dx_self_diabetes = 
+           fct_explicit_na(
+             dx_self_diabetes,
+             na_level = "missing"
+           ))
+
+baseline %>%
+  janitor::tabyl(dx_self_diabetes)
+
+baseline %<>%
+  rename(dx_self_age_diabetes = `2976-0.0`)
+```
+
+### Cancer  
+```{r clean_01 dx_self_cancer}
+table(baseline$`2453-0.0`, useNA = "ifany")
+
+baseline %<>%
+  mutate(dx_self_cancer = 
+           case_when(
+             `2453-0.0` == -1 | `2453-0.0` == -3 ~ "", 
+             grepl("1", `2453-0.0`) ~ "1", 
+             grepl("0", `2453-0.0`) ~ "0",
+             TRUE ~ ""
+           ), 
+         dx_self_cancer =
+           as.numeric(dx_self_cancer),
+         dx_self_cancer = 
+           factor(
+             dx_self_cancer,
+             levels = c(0, 1),
+             labels = c("no", "yes")
+           ),
+         dx_self_cancer = 
+           fct_explicit_na(
+             dx_self_cancer,
+             na_level = "missing"
+           ))
+
+baseline %>%
+  janitor::tabyl(dx_self_cancer)
+```
+
+## Remove unused variables  
+```{r clean_01 remove variables}
+baseline %<>%
+  dplyr::select(-c(`137-0.0`, `845-0.0`, 
+                   `1239-0.0`, `1249-0.0`, `1259-0.0`, `1269-0.0`, `1279-0.0`, `2443-0.0`, `2453-0.0`, `2463-0.0`, `2473-0.0`, 
+                   `2644-0.0`, `2986-0.0`, `3005-0.0`, `3166-0.1`, `3436-0.0`, `3446-0.0`, `3731-0.0`,
+                   `3761-0.0`, `3786-0.0`, `3992-0.0`, `4012-0.0`, `4022-0.0`, `4041-0.0`, 
+                   `5959-0.0`, `6150-0.0`, `6151-0.0`, `6152-0.0`, `6153-0.0`, `6154-0.0`, `6155-0.0`, `6177-0.0`, `6179-0.0`, 
+                   `12144-2.0`, `20003-0.0`, `90192-0.0`))
+```
+
+# Generate new variables  
+## Indicator variable for outliers of blood cell counts - older version    
+```{r clean_01 ct_outlier}
+baseline %<>%  
+  mutate(CT_Outlier = 
+           case_when(
+             log(wbc + 1) < 1 | log(wbc + 1) > 3 | 
+               rbc < 1.9 | rbc > 7 | log(rbc + 1) < 1.2 | log(n_rbc + 1) > 0.75 | log(reti + 1) > 0.6 | 
+               log(mrv + 1) < 4.0 | log(mrv + 1) > 5.25 | hb < 6 | hb > 20 | hct < 20 | hct > 60 | mcv < 50 | mcv > 125 | 
+               log(mch + 1) < 2.9 | log(mch + 1) > 4 | log(mchc + 1) < 3.3 | log(mchc + 1) > 4 | log(rbcdw + 1) > 3.4 | 
+               log(plt + 1) < 3 | log(plt + 1) > 7 | plt > 750 | log(platcrit + 1) > 0.5 | log(pdw + 1) < 2.75 | 
+               log(mono + 1) > 2 | log(eos + 1) > 1.25 | log(baso + 1) > 0.75 ~ 1),
+         CT_Outlier = ifelse(is.na(CT_Outlier), 0, CT_Outlier), 
+         n_rbc_yn = ifelse(n_rbc == 0, 0, 1)) 
+table(baseline$CT_Outlier)
+```
+
+## Indicator variable for outliers of blood cell counts - newer version  
+* Same as the `ExcludeCells` Dan uses  
+
+```{r clean_01 ct_exclude}
+baseline %<>%  
+  mutate(ct_exclude = 
+           case_when(
+             log(wbc + 1) > 1.25 & log(wbc + 1) < 3 & 
+               log(rbc + 1) > 1.4 & log(rbc + 1) < 2 & 
+               plt > 10 & plt < 500 & 
+               log(lymph + 1) > 0.10 & log(lymph + 1) < 2 &
+               log(mono + 1) < 0.9 &
+               log(neutro + 1) > 0.75 & log(neutro) < 2.75 & 
+               log(eos + 1) < 0.75 & log(baso + 1) < 0.45 ~ 0),
+         ct_exclude = ifelse(is.na(ct_exclude), 1, ct_exclude)) 
+table(baseline$ct_exclude)
+```
+
+## Convert units  
+```{r clean_01 units}
+baseline %<>%
+  ## convert from nmol/L to mg/dL
+  mutate(cholesterol_tr = cholesterol * (1/0.0259),
+         glucose_tr     = glucose * (18.0182),
+         hdl_tr         = hdl * (1/0.0259),
+         ldl_tr         = ldl_direct * (1/0.0259),
+         trig_tr        = trig * (1/0.0113)) %>%
+  ## convert from mmol/mol to %
+  mutate(hba1c_tr = (hba1c/10.929) + 2.15) 
+```
+
+## Calculated LDL  
+```{r clean_01 ldl calculated}
+baseline %<>%
+  mutate(
+    ldl_cal = ifelse(trig_tr < 400, cholesterol_tr - hdl_tr - (trig_tr/5), NA)
+    )
+```
+
+# Save data set 
+```{r clean_01 save}
+baseline %>%
+  skimr::skim_without_charts()
+
+baseline %>%
+  saveRDS("ukb_heteroplasmy_mortality_01_baseline.rds")
+```

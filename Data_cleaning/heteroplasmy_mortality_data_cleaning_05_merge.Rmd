@@ -1,0 +1,208 @@
+---
+title: "UKB - Heteroplasmy and mortality - data cleaning"
+subtitle: "005 - combine data"
+author: "Yun Soo Hong"
+date: '`r format(Sys.Date(), "%B %d, %Y")`'
+output: 
+  html_document:
+    toc: true
+    toc_float: 
+      collapsed: false
+      smooth_scroll: false
+    pandoc_args: [
+    "--number-sections",
+    "--number-offset=0"
+    ]
+fontsize: 11pt
+---
+
+# Set up  
+
+## Program description  
+* This program reads in the cleaned data sets and merge them to create one data set that includes 1) baseline characteristics, 2) mortality, 3) cancer, and 4) mitoscore information, and saves the object into an .rds ("ukb_heteroplasmy_outcomes_v1.rds").  
+  * Step 1: Read in data  
+    * ukb_heteroplasmy_mortality_01_baseline.rds  
+    * ukb_heteroplasmy_mortality_02_mortality.rds 
+    * ukb_heteroplasmy_mortality_03_cancer.rds  
+    * ukb_heteroplasmy_outcomes_04_mito.rds  
+    * UKB_datafile_080922_updated.txt  
+      * use `used.in.pca.calculation` variable from this file  
+      * this is the same file as the `UKB_datafile_080922.txt` in the OneDrive, which has been updated on September 12, 2022.  
+  * Step 2: Merge data sets    
+  * Step 3: Data management  
+  * Step 4: Save data set   
+
+## Versions of R and packages  
+```{r clean_05 set up, include = FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Load libraries
+```{r clean_05 load libraries, echo = TRUE, message = FALSE}
+library(tidyverse)
+library(magrittr)
+library(lubridate)
+library(stringr)
+library(data.table)
+```
+
+## Print out settings  
+```{r clean_05 print settings}
+options(tibble.print_max = 100)
+options(pillar.sigfig = 5)
+```
+
+# Load data  
+## Baseline characteristics    
+```{r clean_05 load data baseline}
+baseline <- readRDS("ukb_heteroplasmy_mortality_01_baseline.rds")
+baseline
+
+baseline %>%
+  summarise(nrow = n(),
+            n = n_distinct(id))
+```
+
+## Mortality  
+```{r clean_05 load data mortality}
+death <- readRDS("ukb_heteroplasmy_mortality_02_mortality.rds")
+death
+
+death %>%
+  summarise(nrow= n(),
+            n = n_distinct(id))
+```
+
+## Cancer  
+```{r clean_05 load data cancer}
+cancer <- readRDS("ukb_heteroplasmy_mortality_03_cancer.rds") %>%
+  as.data.frame()
+cancer
+
+cancer %>%
+  summarise(nrow = n(),
+            n = n_distinct(id))
+```
+
+## Mitoscore  
+```{r clean_05 load data mito}
+mito <- readRDS("ukb_heteroplasmy_mortality_04_mito.rds") %>%
+  as.data.frame()
+mito
+
+mito %>%
+  summarise(nrow = n(),
+            n = n_distinct(id))
+```
+
+## Other characteristics  
+* Use `UKB_datafile_080922_updated.txt` for `used.in.pca.calculation` variable  
+
+```{r clean_05 load others}
+ukb_datafile <- data.table::fread("../../data/UKB_datafile_080922_updated.txt") %>%
+  as.data.frame()
+
+ukb_datafile %<>%
+  dplyr::select(SAMPLE, used.in.pca.calculation) %>%
+  rename(id = SAMPLE) %>%
+  mutate(id = as.character(id))
+```
+
+# Merge data sets  
+* Mitoscore data set is used as the main data set and, therefore, participants without information on mitoscore are excluded from this data.  
+```{r clean_05 merge}
+ukb_combined <- mito %>%
+  inner_join(baseline, by = "id") %>%  
+  inner_join(., cancer, by = "id") %>%
+  left_join(., death, by = "id") %>%
+  left_join(., ukb_datafile, by = "id") # 1 person is excluded as they did not have any baseline/phenotype data (ID = 2153839); does not exist in the data set at the time of data download (June 18, 2022)
+```
+
+# Data management  
+## Label settings  
+```{r clean_05 label}
+noyes <- c("no", "yes")
+```
+
+## Death  
+### Replace missing as 0  
+```{r clean_05 death}
+table(ukb_combined$death, useNA = "ifany")
+
+ukb_combined %<>%
+  mutate(
+    death = 
+      case_when(
+        death == 1 ~ 1,
+        TRUE ~ 0
+      )
+  )
+
+table(ukb_combined$death, useNA = "ifany")
+```
+
+### Cause of death  
+* Replace each cause of death as "no" when `death` == 0  
+
+```{r clean_05 cod replace}
+ukb_combined %<>%
+  mutate(
+    across(
+      starts_with("cod_"), 
+      ~ifelse(death == 1 & .x == "yes", 1, 0)
+      )
+    ) 
+```
+
+### Censoring date for mortality  
+* Administrative censoring date is defined ("2021-11-12" based on the last date of death observed in the main data set.)  
+
+```{r clean_05 death_end_fu}
+adm_censor <- as.Date("2021-11-12")
+
+ukb_combined %<>%
+  mutate(
+    death_end_fu = 
+      as.Date(ifelse(death == 1, date_of_death, adm_censor), origin = "1970-01-01")
+  )
+```
+
+### Cause of death as a factor variable  
+
+```{r clean_05 cod factor}
+ukb_combined %<>%
+  mutate(
+    cod = 
+      case_when(
+        cod_infection == 1 ~ 1,
+        cod_neoplasm == 1 ~ 2, 
+        cod_blood == 1 ~ 3,
+        cod_endocrine == 1 ~ 4,
+        cod_mental == 1 ~ 5, 
+        cod_neuro == 1 ~ 6, 
+        cod_cardio == 1 ~ 7, 
+        cod_pulmo == 1 ~ 8,
+        cod_gi == 1 ~ 9,
+        cod_gu == 1 ~ 10, 
+        cod_covid == 1 ~ 11,
+        cod_external == 1 ~ 12,
+        TRUE ~ 0
+      ),
+    cod = 
+      factor(
+        cod, 
+        levels = c(0:12),
+        labels = c("alive", "infection", "neoplasm", "blood", "endocrine", "mental", "neuro", 
+                   "cardio", "pulmo", "gi", "gu", "covid", "external")
+      )
+  )
+
+table(ukb_combined$cod, useNA = "ifany")
+```
+
+# Save data set  
+```{r clean_05 save}
+ukb_combined %>%
+  saveRDS("ukb_heteroplasmy_mortality_v1.rds")
+```
+

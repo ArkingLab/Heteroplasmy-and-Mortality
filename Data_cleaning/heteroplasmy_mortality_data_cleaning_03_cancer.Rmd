@@ -1,0 +1,1441 @@
+---
+title: "UKB - Heteroplasmy and mortality - data cleaning"
+subtitle: "003 - cancer outcomes"
+author: "Yun Soo Hong"
+date: '`r format(Sys.Date(), "%B %d, %Y")`'
+output: 
+  html_document:
+    toc: true
+    toc_float: 
+      collapsed: false
+      smooth_scroll: false
+    pandoc_args: [
+    "--number-sections",
+    "--number-offset=0"
+    ]
+fontsize: 11pt
+---
+
+# Set up  
+
+## Program description  
+* This program reads in cancer outcome data set (from cancer registry, containing type of cancer, age at diagnosis, and date of diagnosis) downloaded from the UK Biobank RAP on June 8, 2022 (`mt_heteroplasmy_cancer_registry_2022_06_08.csv`), cleans the raw data, and saves the object into an .rds ("ukb_heteroplasmy_outcomes_03_cancer.rds").  
+  * Step 1: Read in data  
+  * Step 2: Rename variables     
+  * Step 3: Data transformation (wide to long)  
+  * Step 4: Create data subsets by type of cancer  
+  * Step 5: Combine data subsets  
+  * Step 6: Save data  
+* Notes: 
+  * In the original .rmd, we include cleaning of in situ cancer and benign neoplasms. We, however, did not use the information and they are, therefore, not included in this script.
+  * Initially, variables for polycythemia vera and myelodysplastic syndromes were created but due to small number of cases, they were no longer included in the analysis. They are included in the original .rmd but not in this script.  
+
+## Versions of R and packages  
+```{r clean_03 set up, include = FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Load libraries
+```{r clean_03 load libraries, echo = TRUE, message = FALSE}
+library(tidyverse)
+library(magrittr)
+library(lubridate)
+library(stringr)
+library(data.table)
+```
+
+## Print out settings  
+```{r clean_03 print settings}
+options(tibble.print_max = 100)
+options(pillar.sigfig = 5)
+```
+
+# Load data  
+```{r clean_03 load cancer data}
+cancer <- fread("../../data/mt_heteroplasmy_cancer_registry_2022_06_08.csv") %>%
+  as.data.frame()
+
+# select relevant variables
+cancer %<>%
+  dplyr::select(eid, `40009-0.0`:`40013-14.0`)
+```
+
+# Rename variables    
+## Label settings  
+```{r clean_03 label}
+noyes <- c("no", "yes")
+``` 
+
+## Cancer yes/no
+```{r clean_03 cancer yn}
+cancer %<>%
+  mutate(
+    cancer_yn = 
+      case_when(
+        !is.na(`40009-0.0`) ~ 1,
+        TRUE ~ 0
+      ),
+    cancer_yn =
+      factor(
+        cancer_yn,
+        levels = c(0, 1), 
+        labels = noyes
+      )
+  ) %>%
+  dplyr::select(eid, cancer_yn, everything())
+
+table(cancer$cancer_yn, useNA = "ifany")
+```
+
+## Reported occurrences of cancer    
+```{r clean_03 cancer occurrence}
+table(cancer$`40009-0.0`, useNA = "ifany")
+
+cancer %<>%
+  # reported occurrences of cancer per person  
+  rename(cancer_num = `40009-0.0`) %>%
+  mutate(
+    cancer_num = ifelse(!is.na(cancer_num), cancer_num, 0),
+    cancer_num = 
+      factor(
+        cancer_num, 
+        levels = c(0:18)
+      )
+  )
+
+cancer %>%
+  janitor::tabyl(cancer_num)
+```
+
+## Date of cancer diagnosis  
+```{r clean_03 cancer date}
+cancer %<>%
+  purrr::set_names(
+    ~ (.) %>%
+    str_replace("40005-", "cancer_date_") 
+  )
+```
+
+## Age at cancer diagnosis  
+```{r clean_03 cancer age}
+cancer %<>%
+  purrr::set_names(
+    ~ (.) %>%
+      str_replace("40008-", "cancer_age_")
+  )
+```
+
+## Type of cancer  
+### ICD-10 codes  
+```{r clean_03 cancer icd-10}
+cancer %<>%
+  purrr::set_names(
+    ~ (.) %>%
+      str_replace("40006-", "cancer_icd10_")
+  )
+```
+
+### ICD-9 codes  
+```{r clean_03 cancer icd-9}
+cancer %<>%
+  purrr::set_names(
+    ~ (.) %>%
+      str_replace("40013-", "cancer_icd9_")
+  )
+```
+
+## Rename variables  
+```{r clean_03 cancer rename}
+cancer %<>%
+  purrr::set_names(
+    ~ (.) %>%
+      str_replace("\\.0", "")
+  )
+```
+
+# Reformat from wide to long  
+```{r clean_03 reformat}
+# prior to reformatting, we add 3 columns to cancer_icd9 variables to make it the same number of variable as cancer_icd10 variables  
+cancer %<>%
+  mutate(cancer_icd9_15 = NA, 
+         cancer_icd9_16 = NA, 
+         cancer_icd9_17 = NA)
+
+cancer_long <- cancer %>%
+  pivot_longer(
+    !c(eid, cancer_yn, cancer_num),
+    names_to = c(".value", ".value", "ins"),
+    names_pattern = "(.+)_(.+)_(.+)"
+  ) %>%
+  rename(
+    cancer_date = cancerdate,
+    cancer_age = cancerage, 
+    cancer_icd10 = cancericd10,
+    cancer_icd9 = cancericd9
+  )
+glimpse(cancer_long)
+
+table(cancer_long$cancer_icd10, useNA = "ifany")
+table(cancer_long$cancer_icd9, useNA = "ifany")
+```
+
+# Create data subsets by type of cancer  
+* Each data subset by type of cancer includes information on the type of cancer, date of diagnosis, and age at diagnosis  
+
+## Any neoplasm  
+
+```{r clean_03 neoplasm}
+# diagnosis 
+cancer_long %<>%
+  mutate(
+    cancer_dx_neoplasm = 
+      case_when(
+        cancer_icd10 != "" | !is.na(cancer_icd9) ~ 1, 
+        TRUE ~ 0
+      )
+  )
+
+table(cancer_long$cancer_dx_neoplasm, useNA = "ifany")
+
+# date of diagnosis  
+cancer_long %<>%
+  mutate(
+    cancer_date_neoplasm = as.Date(ifelse(cancer_dx_neoplasm == 1, cancer_date, NA), origin = "1970-01-01")
+  ) %>%
+  arrange(eid, cancer_date_neoplasm) %>%
+  # the first date of diagnosis variable (`cancer_fdate_neoplasm`)
+  group_by(eid) %>%
+  mutate(nrow_neoplasm = row_number(),
+         cancer_fdate_neoplasm = as.Date(ifelse(nrow_neoplasm == 1, cancer_date_neoplasm, NA), origin = "1970-01-01")) %>%
+  ungroup()
+
+# once diagnosed with cancer, the variable for yn column (`caner_yn_*`) is replaced with 1 ("yes")
+cancer_long %<>%
+  group_by(eid) %>%
+  mutate(
+    cancer_yn_neoplasm =
+      max(cancer_dx_neoplasm)
+  ) %>%
+  ungroup() 
+
+table(cancer_long$cancer_dx_neoplasm, useNA = "ifany")
+table(cancer_long$cancer_yn_neoplasm, useNA = "ifany")
+
+# save the object for any cancers
+cancer_neoplasm <- cancer_long %>%
+  filter(nrow_neoplasm == 1) %>%
+  dplyr::select(
+    eid, cancer_yn, cancer_icd10, cancer_icd9, cancer_dx_neoplasm, cancer_date_neoplasm, cancer_age 
+    ) %>%
+  rename(cancer_age_neoplasm = cancer_age)
+glimpse(cancer_neoplasm)
+
+# remove variables related to any cancers from `cancer_long` data set  
+cancer_long %<>%
+  dplyr::select(-c(cancer_dx_neoplasm, cancer_date_neoplasm, nrow_neoplasm, cancer_fdate_neoplasm, cancer_yn_neoplasm))
+```
+
+## Any cancer    
+* ICD10 C00-C97, ICD9 140-199, 200-208  
+
+```{r clean_03 cancer}
+any_cancer_icd9 <- c("14", "15", "16", "17", "18", "19", "20")
+
+# diagnosis 
+cancer_long %<>%
+  mutate(
+    cancer_dx_cancer = 
+      case_when(
+        grepl("C", cancer_icd10) ~ 1, 
+        grepl(paste(any_cancer_icd9, collapse = "|"), cancer_icd9) ~ 1,
+        TRUE ~ 0
+      )
+  )
+
+table(cancer_long$cancer_dx_cancer, useNA = "ifany")
+
+# date of diagnosis  
+cancer_long %<>%
+  mutate(
+    cancer_date_cancer = as.Date(ifelse(cancer_dx_cancer == 1, cancer_date, NA), origin = "1970-01-01")
+  ) %>%
+  arrange(eid, cancer_date_cancer) %>%
+  # the first date of diagnosis variable (`cancer_fdate_cancer`)
+  group_by(eid) %>%
+  mutate(nrow_cancer = row_number(),
+         cancer_fdate_cancer = as.Date(ifelse(nrow_cancer == 1, cancer_date_cancer, NA), origin = "1970-01-01")) %>%
+  ungroup()
+
+# once diagnosed with cancer, the variable for yn column (`caner_yn_*`) is replaced with 1 ("yes")
+cancer_long %<>%
+  group_by(eid) %>%
+  mutate(
+    cancer_yn_cancer =
+      max(cancer_dx_cancer)
+  ) %>%
+  ungroup() 
+
+table(cancer_long$cancer_dx_cancer, useNA = "ifany")
+table(cancer_long$cancer_yn_cancer, useNA = "ifany")
+
+# save the object for any cancers
+cancer_cancer <- cancer_long %>%
+  filter(nrow_cancer == 1) %>%
+  dplyr::select(
+    eid, cancer_dx_cancer, cancer_date_cancer, cancer_age 
+    ) %>%
+  rename(cancer_age_cancer = cancer_age)
+
+# remove variables related to any cancers from `cancer_long` data set  
+cancer_long %<>%
+  dplyr::select(-c(cancer_dx_cancer, cancer_date_cancer, nrow_cancer, cancer_fdate_cancer, cancer_yn_cancer))
+```
+
+## Malignant neoplasms of lip, oral cavity, and pharynx
+* ICD10 C00-C14, ICD9 140-149   
+```{r clean_03 head and neck}
+head_neck_icd10 <- c("C0", "C10", "C11", "C12", "C13", "C14")
+head_neck_icd9 <- c("140", "141", "142", "143", "144", "145", "146", "147", "148", "149")
+
+# diagnosis 
+cancer_long %<>%
+  mutate(
+    cancer_dx_head_neck = 
+      case_when(
+        grepl(paste(head_neck_icd10, collapse = "|"), cancer_icd10) ~ 1, 
+        grepl(paste(head_neck_icd9, collapse = "|"), cancer_icd9) ~ 1,
+        TRUE ~ 0
+      )
+  )
+
+table(cancer_long$cancer_dx_head_neck, useNA = "ifany")
+
+# date of diagnosis  
+cancer_long %<>%
+  mutate(
+    cancer_date_head_neck = as.Date(ifelse(cancer_dx_head_neck == 1, cancer_date, NA), origin = "1970-01-01")
+  ) %>%
+  arrange(eid, cancer_date_head_neck) %>%
+  # the first date of diagnosis variable (`cancer_fdate_head_neck`)
+  group_by(eid) %>%
+  mutate(nrow_head_neck = row_number(),
+         cancer_fdate_head_neck = as.Date(ifelse(nrow_head_neck == 1, cancer_date_head_neck, NA), origin = "1970-01-01")) %>%
+  ungroup()
+
+# once diagnosed with cancer, the variable for yn column (`caner_yn_*`) is replaced with 1 ("yes")
+cancer_long %<>%
+  group_by(eid) %>%
+  mutate(
+    cancer_yn_head_neck =
+      max(cancer_dx_head_neck)
+  ) %>%
+  ungroup() 
+
+table(cancer_long$cancer_dx_head_neck, useNA = "ifany")
+table(cancer_long$cancer_yn_head_neck, useNA = "ifany")
+
+# save the object for head and neck cancer
+cancer_head_neck <- cancer_long %>%
+  filter(nrow_head_neck == 1) %>%
+  dplyr::select(
+    eid, cancer_dx_head_neck, cancer_date_head_neck, cancer_age 
+    ) %>%
+  rename(cancer_age_head_neck = cancer_age)
+
+# remove variables related to head and neck cancers from `cancer_long` data set  
+cancer_long %<>%
+  dplyr::select(-c(cancer_dx_head_neck, cancer_date_head_neck, nrow_head_neck, cancer_fdate_head_neck, cancer_yn_head_neck))
+```
+
+## Malignant neoplasms of digestive organs
+* ICD10 C15-C26, ICD9 150-157, 159  
+```{r clean_03 gi}
+gi_icd10 <- c("C15", "C16", "C17", "C18", "C19", "C20", "C21", "C22", "C23", "C24", "C25", "C26")
+gi_icd9 <- c("150", "151", "152", "153", "154", "155", "156", "157", "159")
+
+# diagnosis 
+cancer_long %<>%
+  mutate(
+    cancer_dx_gi = 
+      case_when(
+        grepl(paste(gi_icd10, collapse = "|"), cancer_icd10) ~ 1, 
+        grepl(paste(gi_icd9, collapse = "|"), cancer_icd9) ~ 1,
+        TRUE ~ 0
+      )
+  )
+
+table(cancer_long$cancer_dx_gi, useNA = "ifany")
+
+# date of diagnosis  
+cancer_long %<>%
+  mutate(
+    cancer_date_gi = as.Date(ifelse(cancer_dx_gi == 1, cancer_date, NA), origin = "1970-01-01")
+  ) %>%
+  arrange(eid, cancer_date_gi) %>%
+  # the first date of diagnosis variable (`cancer_fdate_gi`)
+  group_by(eid) %>%
+  mutate(nrow_gi = row_number(),
+         cancer_fdate_gi = as.Date(ifelse(nrow_gi == 1, cancer_date_gi, NA), origin = "1970-01-01")) %>%
+  ungroup()
+
+# once diagnosed with cancer, the variable for yn column (`caner_yn_*`) is replaced with 1 ("yes")
+cancer_long %<>%
+  group_by(eid) %>%
+  mutate(
+    cancer_yn_gi =
+      max(cancer_dx_gi)
+  ) %>%
+  ungroup() 
+
+table(cancer_long$cancer_dx_gi, useNA = "ifany")
+table(cancer_long$cancer_yn_gi, useNA = "ifany")
+
+# save the object for GI cancers
+cancer_gi <- cancer_long %>%
+  filter(nrow_gi == 1) %>%
+  dplyr::select(
+    eid, cancer_dx_gi, cancer_date_gi, cancer_age 
+    ) %>%
+  rename(cancer_age_gi = cancer_age)
+
+# remove variables related to GI cancers from `cancer_long` data set  
+cancer_long %<>%
+  dplyr::select(-c(cancer_dx_gi, cancer_date_gi, nrow_gi, cancer_fdate_gi, cancer_yn_gi))
+```
+
+## Malignant neoplasms of respiratory and intrathoracic organs  
+* ICD10 C30-C39, ICD9 160-165  
+```{r clean_03 resp}
+resp_icd10 <- c("C30", "C31", "C32", "C33", "C34", "C37", "C38", "C39")
+resp_icd9 <- c("160", "161", "162", "163", "164", "165")
+
+# diagnosis 
+cancer_long %<>%
+  mutate(
+    cancer_dx_resp = 
+      case_when(
+        grepl(paste(resp_icd10, collapse = "|"), cancer_icd10) ~ 1, 
+        grepl(paste(resp_icd9, collapse = "|"), cancer_icd9) ~ 1,
+        TRUE ~ 0
+      )
+  )
+
+table(cancer_long$cancer_dx_resp, useNA = "ifany")
+
+# date of diagnosis  
+cancer_long %<>%
+  mutate(
+    cancer_date_resp = as.Date(ifelse(cancer_dx_resp == 1, cancer_date, NA), origin = "1970-01-01")
+  ) %>%
+  arrange(eid, cancer_date_resp) %>%
+  # the first date of diagnosis variable (`cancer_fdate_resp`)
+  group_by(eid) %>%
+  mutate(nrow_resp = row_number(),
+         cancer_fdate_resp = as.Date(ifelse(nrow_resp == 1, cancer_date_resp, NA), origin = "1970-01-01")) %>%
+  ungroup()
+
+# once diagnosed with cancer, the variable for yn column (`caner_yn_*`) is replaced with 1 ("yes")
+cancer_long %<>%
+  group_by(eid) %>%
+  mutate(
+    cancer_yn_resp =
+      max(cancer_dx_resp)
+  ) %>%
+  ungroup() 
+
+table(cancer_long$cancer_dx_resp, useNA = "ifany")
+table(cancer_long$cancer_yn_resp, useNA = "ifany")
+
+# save the object for resp cancers
+cancer_resp <- cancer_long %>%
+  filter(nrow_resp == 1) %>%
+  dplyr::select(
+    eid, cancer_dx_resp, cancer_date_resp, cancer_age 
+    ) %>%
+  rename(cancer_age_resp = cancer_age)
+
+# remove variables related to resp cancers from `cancer_long` data set  
+cancer_long %<>%
+  dplyr::select(-c(cancer_dx_resp, cancer_date_resp, nrow_resp, cancer_fdate_resp, cancer_yn_resp))
+```
+
+## Malignant neoplasms of bone and articular cartilage    
+* ICD10 C40-C41, ICD9 170  
+```{r clean_03 bone}
+bone_icd10 <- c("C40", "C41")
+bone_icd9 <- c("170")
+
+# diagnosis 
+cancer_long %<>%
+  mutate(
+    cancer_dx_bone = 
+      case_when(
+        grepl(paste(bone_icd10, collapse = "|"), cancer_icd10) ~ 1, 
+        grepl(paste(bone_icd9, collapse = "|"), cancer_icd9) ~ 1,
+        TRUE ~ 0
+      )
+  )
+
+table(cancer_long$cancer_dx_bone, useNA = "ifany")
+
+# date of diagnosis  
+cancer_long %<>%
+  mutate(
+    cancer_date_bone = as.Date(ifelse(cancer_dx_bone == 1, cancer_date, NA), origin = "1970-01-01")
+  ) %>%
+  arrange(eid, cancer_date_bone) %>%
+  # the first date of diagnosis variable (`cancer_fdate_bone`)
+  group_by(eid) %>%
+  mutate(nrow_bone = row_number(),
+         cancer_fdate_bone = as.Date(ifelse(nrow_bone == 1, cancer_date_bone, NA), origin = "1970-01-01")) %>%
+  ungroup()
+
+# once diagnosed with cancer, the variable for yn column (`caner_yn_*`) is replaced with 1 ("yes")
+cancer_long %<>%
+  group_by(eid) %>%
+  mutate(
+    cancer_yn_bone =
+      max(cancer_dx_bone)
+  ) %>%
+  ungroup() 
+
+table(cancer_long$cancer_dx_bone, useNA = "ifany")
+table(cancer_long$cancer_yn_bone, useNA = "ifany")
+
+# save the object for bone cancers
+cancer_bone <- cancer_long %>%
+  filter(nrow_bone == 1) %>%
+  dplyr::select(
+    eid, cancer_dx_bone, cancer_date_bone, cancer_age 
+    ) %>%
+  rename(cancer_age_bone = cancer_age)
+
+# remove variables related to bone cancers from `cancer_long` data set  
+cancer_long %<>%
+  dplyr::select(-c(cancer_dx_bone, cancer_date_bone, nrow_bone, cancer_fdate_bone, cancer_yn_bone))
+```
+
+## Melanoma and other malignant neoplasms of skin  
+* ICD10 C43-C44, ICD9 172-173
+```{r clean_03 skin}
+skin_icd10 <- c("C43", "C44")
+skin_icd9 <- c("172", "173")
+
+# diagnosis 
+cancer_long %<>%
+  mutate(
+    cancer_dx_skin = 
+      case_when(
+        grepl(paste(skin_icd10, collapse = "|"), cancer_icd10) ~ 1, 
+        grepl(paste(skin_icd9, collapse = "|"), cancer_icd9) ~ 1,
+        TRUE ~ 0
+      )
+  )
+
+table(cancer_long$cancer_dx_skin, useNA = "ifany")
+
+# date of diagnosis  
+cancer_long %<>%
+  mutate(
+    cancer_date_skin = as.Date(ifelse(cancer_dx_skin == 1, cancer_date, NA), origin = "1970-01-01")
+  ) %>%
+  arrange(eid, cancer_date_skin) %>%
+  # the first date of diagnosis variable (`cancer_fdate_skin`)
+  group_by(eid) %>%
+  mutate(nrow_skin = row_number(),
+         cancer_fdate_skin = as.Date(ifelse(nrow_skin == 1, cancer_date_skin, NA), origin = "1970-01-01")) %>%
+  ungroup()
+
+# once diagnosed with cancer, the variable for yn column (`caner_yn_*`) is replaced with 1 ("yes")
+cancer_long %<>%
+  group_by(eid) %>%
+  mutate(
+    cancer_yn_skin =
+      max(cancer_dx_skin)
+  ) %>%
+  ungroup() 
+
+table(cancer_long$cancer_dx_skin, useNA = "ifany")
+table(cancer_long$cancer_yn_skin, useNA = "ifany")
+
+# save the object for skin cancers
+cancer_skin <- cancer_long %>%
+  filter(nrow_skin == 1) %>%
+  dplyr::select(
+    eid, cancer_dx_skin, cancer_date_skin, cancer_age 
+    ) %>%
+  rename(cancer_age_skin = cancer_age)
+
+# remove variables related to skin cancers from `cancer_long` data set  
+cancer_long %<>%
+  dplyr::select(-c(cancer_dx_skin, cancer_date_skin, nrow_skin, cancer_fdate_skin, cancer_yn_skin))
+```
+
+## Malignant neoplasms of mesothelial and soft tissue  
+* ICD10 C45-C49, ICD9 158, 171, 176  
+```{r clean_03 soft_tissue}
+soft_tissue_icd10 <- c("C45", "C46", "C47", "C48", "C49")
+soft_tissue_icd9 <- c("158", "171", "176")
+
+# diagnosis 
+cancer_long %<>%
+  mutate(
+    cancer_dx_soft_tissue = 
+      case_when(
+        grepl(paste(soft_tissue_icd10, collapse = "|"), cancer_icd10) ~ 1, 
+        grepl(paste(soft_tissue_icd9, collapse = "|"), cancer_icd9) ~ 1,
+        TRUE ~ 0
+      )
+  )
+
+table(cancer_long$cancer_dx_soft_tissue, useNA = "ifany")
+
+# date of diagnosis  
+cancer_long %<>%
+  mutate(
+    cancer_date_soft_tissue = as.Date(ifelse(cancer_dx_soft_tissue == 1, cancer_date, NA), origin = "1970-01-01")
+  ) %>%
+  arrange(eid, cancer_date_soft_tissue) %>%
+  # the first date of diagnosis variable (`cancer_fdate_soft_tissue`)
+  group_by(eid) %>%
+  mutate(nrow_soft_tissue = row_number(),
+         cancer_fdate_soft_tissue = as.Date(ifelse(nrow_soft_tissue == 1, cancer_date_soft_tissue, NA), origin = "1970-01-01")) %>%
+  ungroup()
+
+# once diagnosed with cancer, the variable for yn column (`caner_yn_*`) is replaced with 1 ("yes")
+cancer_long %<>%
+  group_by(eid) %>%
+  mutate(
+    cancer_yn_soft_tissue =
+      max(cancer_dx_soft_tissue)
+  ) %>%
+  ungroup() 
+
+table(cancer_long$cancer_dx_soft_tissue, useNA = "ifany")
+table(cancer_long$cancer_yn_soft_tissue, useNA = "ifany")
+
+# save the object for soft_tissue cancers
+cancer_soft_tissue <- cancer_long %>%
+  filter(nrow_soft_tissue == 1) %>%
+  dplyr::select(
+    eid, cancer_dx_soft_tissue, cancer_date_soft_tissue, cancer_age 
+    ) %>%
+  rename(cancer_age_soft_tissue = cancer_age)
+
+# remove variables related to soft_tissue cancers from `cancer_long` data set  
+cancer_long %<>%
+  dplyr::select(-c(cancer_dx_soft_tissue, cancer_date_soft_tissue, nrow_soft_tissue, cancer_fdate_soft_tissue, cancer_yn_soft_tissue))
+```
+
+## Malignant neoplasm of breast  
+* ICD10 C50, ICD9 174, 175  
+```{r clean_03 breast}
+breast_icd9 <- c("174", "175")
+
+# diagnosis 
+cancer_long %<>%
+  mutate(
+    cancer_dx_breast = 
+      case_when(
+        grepl("C50", cancer_icd10) ~ 1, 
+        grepl(paste(breast_icd9, collapse = "|"), cancer_icd9) ~ 1,
+        TRUE ~ 0
+      )
+  )
+
+table(cancer_long$cancer_dx_breast, useNA = "ifany")
+
+# date of diagnosis  
+cancer_long %<>%
+  mutate(
+    cancer_date_breast = as.Date(ifelse(cancer_dx_breast == 1, cancer_date, NA), origin = "1970-01-01")
+  ) %>%
+  arrange(eid, cancer_date_breast) %>%
+  # the first date of diagnosis variable (`cancer_fdate_breast`)
+  group_by(eid) %>%
+  mutate(nrow_breast = row_number(),
+         cancer_fdate_breast = as.Date(ifelse(nrow_breast == 1, cancer_date_breast, NA), origin = "1970-01-01")) %>%
+  ungroup()
+
+# once diagnosed with cancer, the variable for yn column (`caner_yn_*`) is replaced with 1 ("yes")
+cancer_long %<>%
+  group_by(eid) %>%
+  mutate(
+    cancer_yn_breast =
+      max(cancer_dx_breast)
+  ) %>%
+  ungroup() 
+
+table(cancer_long$cancer_dx_breast, useNA = "ifany")
+table(cancer_long$cancer_yn_breast, useNA = "ifany")
+
+# save the object for breast cancers
+cancer_breast <- cancer_long %>%
+  filter(nrow_breast == 1) %>%
+  dplyr::select(
+    eid, cancer_dx_breast, cancer_date_breast, cancer_age 
+    ) %>%
+  rename(cancer_age_breast = cancer_age)
+
+# remove variables related to breast cancers from `cancer_long` data set  
+cancer_long %<>%
+  dplyr::select(-c(cancer_dx_breast, cancer_date_breast, nrow_breast, cancer_fdate_breast, cancer_yn_breast))
+```
+
+## Malignant neoplasms of female genital organs  
+* ICD10 C51-C58, ICD9 179-184  
+```{r clean_03 female}
+female_icd10 <- c("C51", "C52", "C53", "C54", "C55", "C56", "C57", "C58")
+female_icd9 <- c("179", "180", "181", "182", "183", "184")
+
+# diagnosis 
+cancer_long %<>%
+  mutate(
+    cancer_dx_female = 
+      case_when(
+        grepl(paste(female_icd10, collapse = "|"), cancer_icd10) ~ 1, 
+        grepl(paste(female_icd9, collapse = "|"), cancer_icd9) ~ 1,
+        TRUE ~ 0
+      )
+  )
+
+table(cancer_long$cancer_dx_female, useNA = "ifany")
+
+# date of diagnosis  
+cancer_long %<>%
+  mutate(
+    cancer_date_female = as.Date(ifelse(cancer_dx_female == 1, cancer_date, NA), origin = "1970-01-01")
+  ) %>%
+  arrange(eid, cancer_date_female) %>%
+  # the first date of diagnosis variable (`cancer_fdate_female`)
+  group_by(eid) %>%
+  mutate(nrow_female = row_number(),
+         cancer_fdate_female = as.Date(ifelse(nrow_female == 1, cancer_date_female, NA), origin = "1970-01-01")) %>%
+  ungroup()
+
+# once diagnosed with cancer, the variable for yn column (`caner_yn_*`) is replaced with 1 ("yes")
+cancer_long %<>%
+  group_by(eid) %>%
+  mutate(
+    cancer_yn_female =
+      max(cancer_dx_female)
+  ) %>%
+  ungroup() 
+
+table(cancer_long$cancer_dx_female, useNA = "ifany")
+table(cancer_long$cancer_yn_female, useNA = "ifany")
+
+# save the object for female cancers
+cancer_female <- cancer_long %>%
+  filter(nrow_female == 1) %>%
+  dplyr::select(
+    eid, cancer_dx_female, cancer_date_female, cancer_age 
+    ) %>%
+  rename(cancer_age_female = cancer_age)
+
+# remove variables related to female cancers from `cancer_long` data set  
+cancer_long %<>%
+  dplyr::select(-c(cancer_dx_female, cancer_date_female, nrow_female, cancer_fdate_female, cancer_yn_female))
+```
+
+## Malignant neoplasms of male genital organs  
+* ICD10 C60-C63, ICD9 185-187
+```{r clean_03 male}
+male_icd10 <- c("C60", "C61", "C62", "C63")
+male_icd9 <- c("185", "186", "187")
+
+# diagnosis 
+cancer_long %<>%
+  mutate(
+    cancer_dx_male = 
+      case_when(
+        grepl(paste(male_icd10, collapse = "|"), cancer_icd10) ~ 1, 
+        grepl(paste(male_icd9, collapse = "|"), cancer_icd9) ~ 1,
+        TRUE ~ 0
+      )
+  )
+
+table(cancer_long$cancer_dx_male, useNA = "ifany")
+
+# date of diagnosis  
+cancer_long %<>%
+  mutate(
+    cancer_date_male = as.Date(ifelse(cancer_dx_male == 1, cancer_date, NA), origin = "1970-01-01")
+  ) %>%
+  arrange(eid, cancer_date_male) %>%
+  # the first date of diagnosis variable (`cancer_fdate_male`)
+  group_by(eid) %>%
+  mutate(nrow_male = row_number(),
+         cancer_fdate_male = as.Date(ifelse(nrow_male == 1, cancer_date_male, NA), origin = "1970-01-01")) %>%
+  ungroup()
+
+# once diagnosed with cancer, the variable for yn column (`caner_yn_*`) is replaced with 1 ("yes")
+cancer_long %<>%
+  group_by(eid) %>%
+  mutate(
+    cancer_yn_male =
+      max(cancer_dx_male)
+  ) %>%
+  ungroup() 
+
+table(cancer_long$cancer_dx_male, useNA = "ifany")
+table(cancer_long$cancer_yn_male, useNA = "ifany")
+
+# save the object for male cancers
+cancer_male <- cancer_long %>%
+  filter(nrow_male == 1) %>%
+  dplyr::select(
+    eid, cancer_dx_male, cancer_date_male, cancer_age 
+    ) %>%
+  rename(cancer_age_male = cancer_age)
+
+# remove variables related to male cancers from `cancer_long` data set  
+cancer_long %<>%
+  dplyr::select(-c(cancer_dx_male, cancer_date_male, nrow_male, cancer_fdate_male, cancer_yn_male))
+```
+
+## Malignant neoplasms of urinary tract  
+* ICD10 C64-C68, ICD9 188-189  
+```{r clean_03 urinary}
+urinary_icd10 <- c("C64", "C65", "C66", "C67", "C68")
+urinary_icd9 <- c("188", "189")
+
+# diagnosis 
+cancer_long %<>%
+  mutate(
+    cancer_dx_urinary = 
+      case_when(
+        grepl(paste(urinary_icd10, collapse = "|"), cancer_icd10) ~ 1, 
+        grepl(paste(urinary_icd9, collapse = "|"), cancer_icd9) ~ 1,
+        TRUE ~ 0
+      )
+  )
+
+table(cancer_long$cancer_dx_urinary, useNA = "ifany")
+
+# date of diagnosis  
+cancer_long %<>%
+  mutate(
+    cancer_date_urinary = as.Date(ifelse(cancer_dx_urinary == 1, cancer_date, NA), origin = "1970-01-01")
+  ) %>%
+  arrange(eid, cancer_date_urinary) %>%
+  # the first date of diagnosis variable (`cancer_fdate_urinary`)
+  group_by(eid) %>%
+  mutate(nrow_urinary = row_number(),
+         cancer_fdate_urinary = as.Date(ifelse(nrow_urinary == 1, cancer_date_urinary, NA), origin = "1970-01-01")) %>%
+  ungroup()
+
+# once diagnosed with cancer, the variable for yn column (`caner_yn_*`) is replaced with 1 ("yes")
+cancer_long %<>%
+  group_by(eid) %>%
+  mutate(
+    cancer_yn_urinary =
+      max(cancer_dx_urinary)
+  ) %>%
+  ungroup() 
+
+table(cancer_long$cancer_dx_urinary, useNA = "ifany")
+table(cancer_long$cancer_yn_urinary, useNA = "ifany")
+
+# save the object for urinary cancers
+cancer_urinary <- cancer_long %>%
+  filter(nrow_urinary == 1) %>%
+  dplyr::select(
+    eid, cancer_dx_urinary, cancer_date_urinary, cancer_age 
+    ) %>%
+  rename(cancer_age_urinary = cancer_age)
+
+# remove variables related to urinary cancers from `cancer_long` data set  
+cancer_long %<>%
+  dplyr::select(-c(cancer_dx_urinary, cancer_date_urinary, nrow_urinary, cancer_fdate_urinary, cancer_yn_urinary))
+```
+
+## Malignant neoplasms of eye, brain, and other parts of central nervous system  
+* ICD10 C69-C72, ICD9 190-192
+```{r clean_03 cns}
+cns_icd10 <- c("C69", "C70", "C71", "C72")
+cns_icd9 <- c("190", "191", "192")
+
+# diagnosis 
+cancer_long %<>%
+  mutate(
+    cancer_dx_cns = 
+      case_when(
+        grepl(paste(cns_icd10, collapse = "|"), cancer_icd10) ~ 1, 
+        grepl(paste(cns_icd9, collapse = "|"), cancer_icd9) ~ 1,
+        TRUE ~ 0
+      )
+  )
+
+table(cancer_long$cancer_dx_cns, useNA = "ifany")
+
+# date of diagnosis  
+cancer_long %<>%
+  mutate(
+    cancer_date_cns = as.Date(ifelse(cancer_dx_cns == 1, cancer_date, NA), origin = "1970-01-01")
+  ) %>%
+  arrange(eid, cancer_date_cns) %>%
+  # the first date of diagnosis variable (`cancer_fdate_cns`)
+  group_by(eid) %>%
+  mutate(nrow_cns = row_number(),
+         cancer_fdate_cns = as.Date(ifelse(nrow_cns == 1, cancer_date_cns, NA), origin = "1970-01-01")) %>%
+  ungroup()
+
+# once diagnosed with cancer, the variable for yn column (`caner_yn_*`) is replaced with 1 ("yes")
+cancer_long %<>%
+  group_by(eid) %>%
+  mutate(
+    cancer_yn_cns =
+      max(cancer_dx_cns)
+  ) %>%
+  ungroup() 
+
+table(cancer_long$cancer_dx_cns, useNA = "ifany")
+table(cancer_long$cancer_yn_cns, useNA = "ifany")
+
+# save the object for cns cancers
+cancer_cns <- cancer_long %>%
+  filter(nrow_cns == 1) %>%
+  dplyr::select(
+    eid, cancer_dx_cns, cancer_date_cns, cancer_age 
+    ) %>%
+  rename(cancer_age_cns = cancer_age)
+
+# remove variables related to cns cancers from `cancer_long` data set  
+cancer_long %<>%
+  dplyr::select(-c(cancer_dx_cns, cancer_date_cns, nrow_cns, cancer_fdate_cns, cancer_yn_cns))
+```
+
+## Malignant neoplasms of thyroid and other endocrine glands  
+* ICD10 C73-C75, ICD9 193-194  
+```{r clean_03 endo}
+endo_icd10 <- c("C73", "C74", "C75")
+endo_icd9 <- c("193", "194")
+
+# diagnosis 
+cancer_long %<>%
+  mutate(
+    cancer_dx_endo = 
+      case_when(
+        grepl(paste(endo_icd10, collapse = "|"), cancer_icd10) ~ 1, 
+        grepl(paste(endo_icd9, collapse = "|"), cancer_icd9) ~ 1,
+        TRUE ~ 0
+      )
+  )
+
+table(cancer_long$cancer_dx_endo, useNA = "ifany")
+
+# date of diagnosis  
+cancer_long %<>%
+  mutate(
+    cancer_date_endo = as.Date(ifelse(cancer_dx_endo == 1, cancer_date, NA), origin = "1970-01-01")
+  ) %>%
+  arrange(eid, cancer_date_endo) %>%
+  # the first date of diagnosis variable (`cancer_fdate_endo`)
+  group_by(eid) %>%
+  mutate(nrow_endo = row_number(),
+         cancer_fdate_endo = as.Date(ifelse(nrow_endo == 1, cancer_date_endo, NA), origin = "1970-01-01")) %>%
+  ungroup()
+
+# once diagnosed with cancer, the variable for yn column (`caner_yn_*`) is replaced with 1 ("yes")
+cancer_long %<>%
+  group_by(eid) %>%
+  mutate(
+    cancer_yn_endo =
+      max(cancer_dx_endo)
+  ) %>%
+  ungroup() 
+
+table(cancer_long$cancer_dx_endo, useNA = "ifany")
+table(cancer_long$cancer_yn_endo, useNA = "ifany")
+
+# save the object for endocrine cancers
+cancer_endo <- cancer_long %>%
+  filter(nrow_endo == 1) %>%
+  dplyr::select(
+    eid, cancer_dx_endo, cancer_date_endo, cancer_age 
+    ) %>%
+  rename(cancer_age_endo = cancer_age)
+
+# remove variables related to endocrine cancers from `cancer_long` data set  
+cancer_long %<>%
+  dplyr::select(-c(cancer_dx_endo, cancer_date_endo, nrow_endo, cancer_fdate_endo, cancer_yn_endo))
+```
+
+## Malignant neoplasms of ill-defined, secondary and unspecified sites  
+* ICD10 C76-C80, ICD9 195-199  
+```{r clean_03 uns}
+uns_icd10 <- c("C76", "C77", "C78", "C79", "C80")
+uns_icd9 <- c("195", "196", "197", "198", "199")
+
+# diagnosis 
+cancer_long %<>%
+  mutate(
+    cancer_dx_uns = 
+      case_when(
+        grepl(paste(uns_icd10, collapse = "|"), cancer_icd10) ~ 1, 
+        grepl(paste(uns_icd9, collapse = "|"), cancer_icd9) ~ 1,
+        TRUE ~ 0
+      )
+  )
+
+table(cancer_long$cancer_dx_uns, useNA = "ifany")
+
+# date of diagnosis  
+cancer_long %<>%
+  mutate(
+    cancer_date_uns = as.Date(ifelse(cancer_dx_uns == 1, cancer_date, NA), origin = "1970-01-01")
+  ) %>%
+  arrange(eid, cancer_date_uns) %>%
+  # the first date of diagnosis variable (`cancer_fdate_uns`)
+  group_by(eid) %>%
+  mutate(nrow_uns = row_number(),
+         cancer_fdate_uns = as.Date(ifelse(nrow_uns == 1, cancer_date_uns, NA), origin = "1970-01-01")) %>%
+  ungroup()
+
+# once diagnosed with cancer, the variable for yn column (`caner_yn_*`) is replaced with 1 ("yes")
+cancer_long %<>%
+  group_by(eid) %>%
+  mutate(
+    cancer_yn_uns =
+      max(cancer_dx_uns)
+  ) %>%
+  ungroup() 
+
+table(cancer_long$cancer_dx_uns, useNA = "ifany")
+table(cancer_long$cancer_yn_uns, useNA = "ifany")
+
+# save the object for unspecified cancers
+cancer_uns <- cancer_long %>%
+  filter(nrow_uns == 1) %>%
+  dplyr::select(
+    eid, cancer_dx_uns, cancer_date_uns, cancer_age 
+    ) %>%
+  rename(cancer_age_uns = cancer_age)
+
+# remove variables related to unspecified cancers from `cancer_long` data set  
+cancer_long %<>%
+  dplyr::select(-c(cancer_dx_uns, cancer_date_uns, nrow_uns, cancer_fdate_uns, cancer_yn_uns))
+```
+
+## Malignant neoplasms, stated or presumed to be primary, of lymphoid, hematopoietic and related tissue  
+* ICD10 C81-C96, ICD9 200-208
+```{r clean_03 hemato}
+hemato_icd10 <- c("C81", "C82", "C83", "C84", "C85", "C86", "C87", "C88", "C89", "C90",
+                  "C91", "C92", "C93", "C94", "C95", "C96")
+hemato_icd9 <- c("200", "201", "202", "203", "204", "205", "206", "207", "208")
+
+# diagnosis 
+cancer_long %<>%
+  mutate(
+    cancer_dx_hemato = 
+      case_when(
+        grepl(paste(hemato_icd10, collapse = "|"), cancer_icd10) ~ 1, 
+        grepl(paste(hemato_icd9, collapse = "|"), cancer_icd9) ~ 1,
+        TRUE ~ 0
+      )
+  )
+
+table(cancer_long$cancer_dx_hemato, useNA = "ifany")
+
+# date of diagnosis  
+cancer_long %<>%
+  mutate(
+    cancer_date_hemato = as.Date(ifelse(cancer_dx_hemato == 1, cancer_date, NA), origin = "1970-01-01")
+  ) %>%
+  arrange(eid, cancer_date_hemato) %>%
+  # the first date of diagnosis variable (`cancer_fdate_hemato`)
+  group_by(eid) %>%
+  mutate(nrow_hemato = row_number(),
+         cancer_fdate_hemato = as.Date(ifelse(nrow_hemato == 1, cancer_date_hemato, NA), origin = "1970-01-01")) %>%
+  ungroup()
+
+# once diagnosed with cancer, the variable for yn column (`caner_yn_*`) is replaced with 1 ("yes")
+cancer_long %<>%
+  group_by(eid) %>%
+  mutate(
+    cancer_yn_hemato =
+      max(cancer_dx_hemato)
+  ) %>%
+  ungroup() 
+
+table(cancer_long$cancer_dx_hemato, useNA = "ifany")
+table(cancer_long$cancer_yn_hemato, useNA = "ifany")
+
+# save the object for hematologic cancers
+cancer_hemato <- cancer_long %>%
+  filter(nrow_hemato == 1) %>%
+  dplyr::select(
+    eid, cancer_dx_hemato, cancer_date_hemato, cancer_age 
+    ) %>%
+  rename(cancer_age_hemato = cancer_age)
+
+# remove variables related to hematologic cancers from `cancer_long` data set  
+cancer_long %<>%
+  dplyr::select(-c(cancer_dx_hemato, cancer_date_hemato, nrow_hemato, cancer_fdate_hemato, cancer_yn_hemato))
+```
+
+### Lymphomas 
+* ICD10 C81-C86, ICD9 200-202  
+```{r clean_03 hemato_lymphoma}
+hemato_lymphoma_icd10 <- c("C81", "C82", "C83", "C84", "C85", "C86")
+hemato_lymphoma_icd9 <- c("200", "201", "202")
+
+# diagnosis 
+cancer_long %<>%
+  mutate(
+    cancer_dx_hemato_lymphoma = 
+      case_when(
+        grepl(paste(hemato_lymphoma_icd10, collapse = "|"), cancer_icd10) ~ 1, 
+        grepl(paste(hemato_lymphoma_icd9, collapse = "|"), cancer_icd9) ~ 1,
+        TRUE ~ 0
+      )
+  )
+
+table(cancer_long$cancer_dx_hemato_lymphoma, useNA = "ifany")
+
+# date of diagnosis  
+cancer_long %<>%
+  mutate(
+    cancer_date_hemato_lymphoma = as.Date(ifelse(cancer_dx_hemato_lymphoma == 1, cancer_date, NA), origin = "1970-01-01")
+  ) %>%
+  arrange(eid, cancer_date_hemato_lymphoma) %>%
+  # the first date of diagnosis variable (`cancer_fdate_hemato_lymphoma`)
+  group_by(eid) %>%
+  mutate(nrow_hemato_lymphoma = row_number(),
+         cancer_fdate_hemato_lymphoma = as.Date(ifelse(nrow_hemato_lymphoma == 1, cancer_date_hemato_lymphoma, NA), origin = "1970-01-01")) %>%
+  ungroup()
+
+# once diagnosed with cancer, the variable for yn column (`caner_yn_*`) is replaced with 1 ("yes")
+cancer_long %<>%
+  group_by(eid) %>%
+  mutate(
+    cancer_yn_hemato_lymphoma =
+      max(cancer_dx_hemato_lymphoma)
+  ) %>%
+  ungroup() 
+
+table(cancer_long$cancer_dx_hemato_lymphoma, useNA = "ifany")
+table(cancer_long$cancer_yn_hemato_lymphoma, useNA = "ifany")
+
+# save the object for lymphoma
+cancer_hemato_lymphoma <- cancer_long %>%
+  filter(nrow_hemato_lymphoma == 1) %>%
+  dplyr::select(
+    eid, cancer_dx_hemato_lymphoma, cancer_date_hemato_lymphoma, cancer_age 
+    ) %>%
+  rename(cancer_age_hemato_lymphoma = cancer_age)
+
+# remove variables related to lymphoma from `cancer_long` data set  
+cancer_long %<>%
+  dplyr::select(-c(cancer_dx_hemato_lymphoma, cancer_date_hemato_lymphoma, nrow_hemato_lymphoma, cancer_fdate_hemato_lymphoma, cancer_yn_hemato_lymphoma))
+```
+
+### Malignant immunoproliferative diseases
+* ICD10 C88  
+```{r clean_03 hemato_ipd}
+# diagnosis 
+cancer_long %<>%
+  mutate(
+    cancer_dx_hemato_ipd = 
+      case_when(
+        grepl("C88", cancer_icd10) ~ 1, 
+        TRUE ~ 0
+      )
+  )
+
+table(cancer_long$cancer_dx_hemato_ipd, useNA = "ifany")
+
+# date of diagnosis  
+cancer_long %<>%
+  mutate(
+    cancer_date_hemato_ipd = as.Date(ifelse(cancer_dx_hemato_ipd == 1, cancer_date, NA), origin = "1970-01-01")
+  ) %>%
+  arrange(eid, cancer_date_hemato_ipd) %>%
+  # the first date of diagnosis variable (`cancer_fdate_hemato_ipd`)
+  group_by(eid) %>%
+  mutate(nrow_hemato_ipd = row_number(),
+         cancer_fdate_hemato_ipd = as.Date(ifelse(nrow_hemato_ipd == 1, cancer_date_hemato_ipd, NA), origin = "1970-01-01")) %>%
+  ungroup()
+
+# once diagnosed with cancer, the variable for yn column (`caner_yn_*`) is replaced with 1 ("yes")
+cancer_long %<>%
+  group_by(eid) %>%
+  mutate(
+    cancer_yn_hemato_ipd =
+      max(cancer_dx_hemato_ipd)
+  ) %>%
+  ungroup() 
+
+table(cancer_long$cancer_dx_hemato_ipd, useNA = "ifany")
+table(cancer_long$cancer_yn_hemato_ipd, useNA = "ifany")
+
+# save the object for immunoproliferative disease cancers
+cancer_hemato_ipd <- cancer_long %>%
+  filter(nrow_hemato_ipd == 1) %>%
+  dplyr::select(
+    eid, cancer_dx_hemato_ipd, cancer_date_hemato_ipd, cancer_age 
+    ) %>%
+  rename(cancer_age_hemato_ipd = cancer_age)
+
+# remove variables related to immunoproliferative cancers from `cancer_long` data set  
+cancer_long %<>%
+  dplyr::select(-c(cancer_dx_hemato_ipd, cancer_date_hemato_ipd, nrow_hemato_ipd, cancer_fdate_hemato_ipd, cancer_yn_hemato_ipd))
+```
+
+### Multiple myeloma and malignant plasma cell neoplasms
+* ICD10 C90, ICD9 203  
+```{r clean_03 hemato_mm}
+# diagnosis 
+cancer_long %<>%
+  mutate(
+    cancer_dx_hemato_mm = 
+      case_when(
+        grepl("C90", cancer_icd10) ~ 1, 
+        grepl("203", cancer_icd9) ~ 1, 
+        TRUE ~ 0
+      )
+  )
+
+table(cancer_long$cancer_dx_hemato_mm, useNA = "ifany")
+
+# date of diagnosis  
+cancer_long %<>%
+  mutate(
+    cancer_date_hemato_mm = as.Date(ifelse(cancer_dx_hemato_mm == 1, cancer_date, NA), origin = "1970-01-01")
+  ) %>%
+  arrange(eid, cancer_date_hemato_mm) %>%
+  # the first date of diagnosis variable (`cancer_fdate_hemato_mm`)
+  group_by(eid) %>%
+  mutate(nrow_hemato_mm = row_number(),
+         cancer_fdate_hemato_mm = as.Date(ifelse(nrow_hemato_mm == 1, cancer_date_hemato_mm, NA), origin = "1970-01-01")) %>%
+  ungroup()
+
+# once diagnosed with cancer, the variable for yn column (`caner_yn_*`) is replaced with 1 ("yes")
+cancer_long %<>%
+  group_by(eid) %>%
+  mutate(
+    cancer_yn_hemato_mm =
+      max(cancer_dx_hemato_mm)
+  ) %>%
+  ungroup() 
+
+table(cancer_long$cancer_dx_hemato_mm, useNA = "ifany")
+table(cancer_long$cancer_yn_hemato_mm, useNA = "ifany")
+
+# save the object for multiple myeloma
+cancer_hemato_mm <- cancer_long %>%
+  filter(nrow_hemato_mm == 1) %>%
+  dplyr::select(
+    eid, cancer_dx_hemato_mm, cancer_date_hemato_mm, cancer_age 
+    ) %>%
+  rename(cancer_age_hemato_mm = cancer_age)
+
+# remove variables related to multiple myeloma from `cancer_long` data set  
+cancer_long %<>%
+  dplyr::select(-c(cancer_dx_hemato_mm, cancer_date_hemato_mm, nrow_hemato_mm, cancer_fdate_hemato_mm, cancer_yn_hemato_mm))
+```
+
+### Leukemias  
+* ICD10 C91-C95, ICD9 204-208
+```{r clean_03 hemato_leukemia}
+hemato_leukemia_icd10 <- c("C91", "C92", "C93", "C94", "C95")
+hemato_leukemia_icd9 <- c("204", "205", "206", "207", "208")
+
+# diagnosis 
+cancer_long %<>%
+  mutate(
+    cancer_dx_hemato_leukemia = 
+      case_when(
+        grepl(paste(hemato_leukemia_icd10, collapse = "|"), cancer_icd10) ~ 1, 
+        grepl(paste(hemato_leukemia_icd9, collapse = "|"), cancer_icd9) ~ 1,
+        TRUE ~ 0
+      )
+  )
+
+table(cancer_long$cancer_dx_hemato_leukemia, useNA = "ifany")
+
+# date of diagnosis  
+cancer_long %<>%
+  mutate(
+    cancer_date_hemato_leukemia = as.Date(ifelse(cancer_dx_hemato_leukemia == 1, cancer_date, NA), origin = "1970-01-01")
+  ) %>%
+  arrange(eid, cancer_date_hemato_leukemia) %>%
+  # the first date of diagnosis variable (`cancer_fdate_hemato_leukemia`)
+  group_by(eid) %>%
+  mutate(nrow_hemato_leukemia = row_number(),
+         cancer_fdate_hemato_leukemia = as.Date(ifelse(nrow_hemato_leukemia == 1, cancer_date_hemato_leukemia, NA), origin = "1970-01-01")) %>%
+  ungroup()
+
+# once diagnosed with cancer, the variable for yn column (`caner_yn_*`) is replaced with 1 ("yes")
+cancer_long %<>%
+  group_by(eid) %>%
+  mutate(
+    cancer_yn_hemato_leukemia =
+      max(cancer_dx_hemato_leukemia)
+  ) %>%
+  ungroup() 
+
+table(cancer_long$cancer_dx_hemato_leukemia, useNA = "ifany")
+table(cancer_long$cancer_yn_hemato_leukemia, useNA = "ifany")
+
+# save the object for leukemia
+cancer_hemato_leukemia <- cancer_long %>%
+  filter(nrow_hemato_leukemia == 1) %>%
+  dplyr::select(
+    eid, cancer_dx_hemato_leukemia, cancer_date_hemato_leukemia, cancer_age 
+    ) %>%
+  rename(cancer_age_hemato_leukemia = cancer_age)
+
+# remove variables related to leukemia from `cancer_long` data set  
+cancer_long %<>%
+  dplyr::select(-c(cancer_dx_hemato_leukemia, cancer_date_hemato_leukemia, nrow_hemato_leukemia, cancer_fdate_hemato_leukemia, cancer_yn_hemato_leukemia))
+```
+
+### Other and unspecified malignant neoplasms of lymphoid, hematopoietic and related tissue 
+* ICD10 C96 
+```{r clean_03 hemato_uns}
+# diagnosis 
+cancer_long %<>%
+  mutate(
+    cancer_dx_hemato_uns = 
+      case_when(
+        grepl("C96", cancer_icd10) ~ 1, 
+        TRUE ~ 0
+      )
+  )
+
+table(cancer_long$cancer_dx_hemato_uns, useNA = "ifany")
+
+# date of diagnosis  
+cancer_long %<>%
+  mutate(
+    cancer_date_hemato_uns = as.Date(ifelse(cancer_dx_hemato_uns == 1, cancer_date, NA), origin = "1970-01-01")
+  ) %>%
+  arrange(eid, cancer_date_hemato_uns) %>%
+  # the first date of diagnosis variable (`cancer_fdate_hemato_uns`)
+  group_by(eid) %>%
+  mutate(nrow_hemato_uns = row_number(),
+         cancer_fdate_hemato_uns = as.Date(ifelse(nrow_hemato_uns == 1, cancer_date_hemato_uns, NA), origin = "1970-01-01")) %>%
+  ungroup()
+
+# once diagnosed with cancer, the variable for yn column (`caner_yn_*`) is replaced with 1 ("yes")
+cancer_long %<>%
+  group_by(eid) %>%
+  mutate(
+    cancer_yn_hemato_uns =
+      max(cancer_dx_hemato_uns)
+  ) %>%
+  ungroup() 
+
+table(cancer_long$cancer_dx_hemato_uns, useNA = "ifany")
+table(cancer_long$cancer_yn_hemato_uns, useNA = "ifany")
+
+# save the object for hematologic cancers
+cancer_hemato_uns <- cancer_long %>%
+  filter(nrow_hemato_uns == 1) %>%
+  dplyr::select(
+    eid, cancer_dx_hemato_uns, cancer_date_hemato_uns, cancer_age 
+    ) %>%
+  rename(cancer_age_hemato_uns = cancer_age)
+
+# remove variables related to hematologic cancers from `cancer_long` data set  
+cancer_long %<>%
+  dplyr::select(-c(cancer_dx_hemato_uns, cancer_date_hemato_uns, nrow_hemato_uns, cancer_fdate_hemato_uns, cancer_yn_hemato_uns))
+```
+
+## Malignant neoplasms of independent (primary) multiple sites  
+* ICD10 C97
+```{r clean_03 multiple}
+multiple_icd10 <- c("C97")
+
+# diagnosis 
+cancer_long %<>%
+  mutate(
+    cancer_dx_multiple = 
+      case_when(
+        grepl(paste(multiple_icd10, collapse = "|"), cancer_icd10) ~ 1, 
+        TRUE ~ 0
+      )
+  )
+
+table(cancer_long$cancer_dx_multiple, useNA = "ifany")
+
+# date of diagnosis  
+cancer_long %<>%
+  mutate(
+    cancer_date_multiple = as.Date(ifelse(cancer_dx_multiple == 1, cancer_date, NA), origin = "1970-01-01")
+  ) %>%
+  arrange(eid, cancer_date_multiple) %>%
+  # the first date of diagnosis variable (`cancer_fdate_multiple`)
+  group_by(eid) %>%
+  mutate(nrow_multiple = row_number(),
+         cancer_fdate_multiple = as.Date(ifelse(nrow_multiple == 1, cancer_date_multiple, NA), origin = "1970-01-01")) %>%
+  ungroup()
+
+# once diagnosed with cancer, the variable for yn column (`caner_yn_*`) is replaced with 1 ("yes")
+cancer_long %<>%
+  group_by(eid) %>%
+  mutate(
+    cancer_yn_multiple =
+      max(cancer_dx_multiple)
+  ) %>%
+  ungroup() 
+
+table(cancer_long$cancer_dx_multiple, useNA = "ifany")
+table(cancer_long$cancer_yn_multiple, useNA = "ifany")
+
+# save the object for multiple cancers
+cancer_multiple <- cancer_long %>%
+  filter(nrow_multiple == 1) %>%
+  dplyr::select(
+    eid, cancer_dx_multiple, cancer_date_multiple, cancer_age 
+    ) %>%
+  rename(cancer_age_multiple = cancer_age)
+
+# remove variables related to multiple cancers from `cancer_long` data set  
+cancer_long %<>%
+  dplyr::select(-c(cancer_dx_multiple, cancer_date_multiple, nrow_multiple, cancer_fdate_multiple, cancer_yn_multiple))
+```
+
+# Combine data sets  
+* Merge the generated data sets so that the final data set consists one row per person with each column indicating the presence of each type of neoplasm and the earliest date and age of diagnosis. An individual have more than one neoplasm. 
+* The data set also contains the first date of diagnosis for any neoplasm, any cancer, any benign neoplasm, or any neoplasm of unknown behavior.  
+
+```{r clean_03 combine data}
+cancer_wide <- cancer_neoplasm %>%
+  left_join(cancer_cancer, by = "eid") %>%
+  left_join(., cancer_head_neck, by = "eid") %>%
+  left_join(., cancer_gi, by = "eid") %>%
+  left_join(., cancer_resp, by = "eid") %>%
+  left_join(., cancer_bone, by = "eid") %>%
+  left_join(., cancer_skin, by = "eid") %>%
+  left_join(., cancer_soft_tissue, by = "eid") %>%
+  left_join(., cancer_breast, by = "eid") %>%
+  left_join(., cancer_female, by = "eid") %>%
+  left_join(., cancer_male, by = "eid") %>%
+  left_join(., cancer_urinary, by = "eid") %>%
+  left_join(., cancer_cns, by = "eid") %>%
+  left_join(., cancer_endo, by = "eid") %>%
+  left_join(., cancer_uns, by = "eid") %>%
+  left_join(., cancer_hemato, by = "eid") %>%
+  left_join(., cancer_hemato_lymphoma, by = "eid") %>%
+  left_join(., cancer_hemato_ipd, by = "eid") %>%
+  left_join(., cancer_hemato_mm, by = "eid") %>%
+  left_join(., cancer_hemato_leukemia, by = "eid") %>%
+  left_join(., cancer_hemato_uns, by = "eid") %>% 
+  left_join(., cancer_multiple, by = "eid") %>%
+  mutate(eid = as.character(eid)) %>%
+  rename(id = eid)
+  
+glimpse(cancer_wide)  
+```
+
+# Save data set  
+```{r clean_03 save}
+cancer_wide %>%
+  skimr::skim_without_charts()
+
+cancer_wide %>%
+  saveRDS("ukb_heteroplasmy_mortality_03_cancer.rds")
+```

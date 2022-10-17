@@ -1,0 +1,1454 @@
+---
+title: "UKB - Heteroplasmy and mortality - data cleaning"
+subtitle: "002 - mortality outcomes"
+author: "Yun Soo Hong"
+date: '`r format(Sys.Date(), "%B %d, %Y")`'
+output: 
+  html_document:
+    toc: true
+    toc_float: 
+      collapsed: false
+      smooth_scroll: false
+    pandoc_args: [
+    "--number-sections",
+    "--number-offset=0"
+    ]
+fontsize: 11pt
+---
+
+# Set up  
+
+## Program description  
+* This program reads in two mortality outcome data sets downloaded from the UK Biobank RAP on June 8, 2022 - 1) death records (`mt_heteroplasmy_death_record_death_2022_06_08.csv`) and 2) cause of death (`mt_heteroplasmy_death_cause_record_death_cause_2022_06_08.csv`) -  cleans the raw data, and saves the object into an .rds ("ukb_heteroplasmy_mortality_02_mortality.rds").   
+  * Step 1: Read in data  
+  * Step 2: Multiple records of death    
+  * Step 3: Merge data sets   
+  * Step 4: Generate new variables for each cause of death  
+  * Step 5: Save data   
+* Notes: In the case when there is more than 1 death records per person, we use observations identified as `ins_index` == 0. In addition, we use only the primary cause of death (`level` == 1) for this study. In the exploratory phase, we have determined that the date of death is identical in the two death records.   
+
+## Versions of R and packages  
+```{r clean_02 set up, include = FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Load libraries
+```{r clean_02 load libraries, echo = TRUE, message = FALSE}
+library(tidyverse)
+library(magrittr)
+library(lubridate)
+library(stringr)
+library(data.table)
+```
+
+## Print out settings  
+```{r clean_02 print settings}
+options(tibble.print_max = 100)
+options(pillar.sigfig = 5)
+```
+
+# Load data  
+## Death  
+* 60 participants have 2 primary causes of death (`ins_index` == 0, `ins_index` == 1). This may happen when there is more than one sources of death registry     
+
+```{r clean_02 load death data}
+death <- fread("../../data/mt_heteroplasmy_death_record_death_2022_06_08.csv") %>%
+  as.data.frame()
+death
+
+# 37,897 participants, 37,957 observations  
+unique(death$eid) %>% 
+  length()
+
+# index of death information
+table(death$ins_index)
+```
+
+## Cause of death  
+* Each individual may have more than one source of death registry (`ins_index`) -- up to 2 sources    
+* Each individual may have more than one cause of death (`arr_index`) -- up to 15 causes of death    
+  * `level` indicates whether the cause of death is primary (`level` == 1) or secondary (`level` == 2)  
+* In this case, we use `ins_index` == 0 and use its primary cause of death as the outcome  
+
+```{r clean_02 load cod data}
+cod <- fread("../../data/mt_heteroplasmy_death_cause_record_death_cause_2022_06_08.csv") %>%
+  as.data.frame()
+cod
+
+# 37,731 participants, 94,440 observations  
+unique(cod$eid) %>%
+  length()
+
+# death registry data  
+table(cod$ins_index)
+
+# cause of death  
+table(cod$arr_index)
+
+# primary or secondary causes of death 
+table(cod$level)
+```
+
+# Multiple records of death  
+## Death  
+* Confirm if the date of death is the same from the 2 distinct records -> all date of death records are identical for each individual    
+
+```{r clean_02 death multiple}
+death %>%
+  # select participants with 2 or more death records
+  group_by(eid) %>%
+  mutate(nrows = n()) %>%
+  ungroup() %>%
+  filter(nrows != 1) %>%  
+  # select relevant variables  
+  dplyr::select(eid, ins_index, date_of_death) %>%
+  # long to wide format 
+  pivot_wider(names_from = ins_index,
+              names_glue = "ins_{ins_index}",
+              values_from = date_of_death) %>%
+  # difference between the first and second record
+  mutate(diff = difftime(ins_0, ins_1, units = "days"),
+         diff = as.numeric(diff)) %>%
+  filter(diff != 0) # 0 observation indicating that date of death from the 2 data sets match  
+```
+
+## Cause of death  
+* The primary cause of death may differ between the two sources of death information  
+* In many cases, the primary cause of death from one source is included as a secondary cause of death from the other  
+
+```{r clean_02 cod multiple}
+cod %>%
+  group_by(eid) %>%
+  mutate(nins = max(ins_index)) %>%
+  ungroup() %>%
+  filter(nins != 0) %>%
+  dplyr::select(eid, ins_index, arr_index, level, cause_icd10) %>%
+  arrange(eid, ins_index, arr_index)
+
+cod %>% 
+  janitor::tabyl(level, arr_index)
+```
+
+# Merge data sets 
+## Keep `ins_index` == 0 and its primary cause of death  
+### Death  
+* 37897 observations with the same number of participants  
+
+```{r clean_02 death select ins_index}
+death %<>%
+  filter(ins_index == 0) %>%
+  dplyr::select(eid, dsource, date_of_death)
+
+death %>% 
+  summarise(
+    n = n_distinct(eid),
+    nrows = n()
+  )
+```
+
+### Cause of death  
+* 37731 observations with the same number of participants  
+* There are 166 (37897 - 37731) participants without an identified primary cause of death but we still include them in the final data set.   
+
+```{r clean_02 cod select ins_index}
+cod %<>%
+  # use only one of the 2 death records and primary cause of death
+  filter(ins_index == 0 & level == 1) %>%
+  dplyr::select(eid, cause_icd10)
+
+cod %>% 
+  summarise(
+    n = n_distinct(eid),
+    nrows = n()
+  )
+```
+
+## Merge two data sets  
+* Merge data sets by `eid` and `ins_index`  
+* As `death` data frame has all the individuals who died (including the ones without information on the cause of death, n = 37897), merge `cod` data frame to `death` data frame. Otherwise, we end up having different numbers of death cases in the analysis.  
+  * 37897 observations with the same number of participants  
+* The last date of death in the data is "2021-11-12" and we use this date as the date of administrative censoring.    
+
+```{r clean_02 merge}
+death_cause <- death %>%
+  left_join(cod, by = "eid") %>%
+  arrange(eid)
+glimpse(death_cause)
+
+death_cause %>% 
+  summarise(
+    n = n_distinct(eid),
+    nrows = n()
+  )
+
+death_cause %>%
+  count(cause_icd10 == "") # n = 166 without cause of death 
+
+# last date of follow-up in the death data = date of administrative censoring  
+max(death_cause$date_of_death) # the last date of death identified in the data is "2021-11-12"
+```
+
+# Generate new variables for each cause of death  
+* Infections: A00-B99, L00-L08
+* Neoplasms: C00-D48  
+  * Cancers: C00-C97  
+    * Solid cancers: C00-C80  
+    * Hematologic cancers: C81-C96
+  * Benign neoplasms: D00-D48  
+    * Polycythemia vera: D45  
+    * Myelodysplastic syndrome: D46  
+* Benign diseases of the blood: D50-D89  
+* Endocrine disorders: E00-E90  
+* Mental and behavioral disorders: F00-F89
+* Neurological disorders: G00-G99  
+  * Neurodegenerative diseases: G30, G31  
+* Eye and adnexa disorders: H00-H59 - there is 0 participants  
+* Ear and mastoid process disorders: H60-H95 (H65-H75) 
+* Circulatory disorders: I00-I99  
+  * Acute myocardial infarction: I21  
+  * Chronic ischemic heart disease: I25  
+  * Cerebrovascular disease: I60-I69  
+* Respiratory disorders: J00-J99  
+  * Chronic lower respiratory disease: J40-J47  
+* Digestive disorders: K00-K95  
+  * Upper GI: K20-K31  
+  * Lower GI: K50-K64  
+  * Liver diseases: K70-K77  
+* Diseases of the skin and subcutaneous tissue: L10-L99
+* Diseases of the musculoskeletal system and connective tissue: M00-M99
+* Genitourinary disorders: N00-N99    
+* Pregnancy, childbirth and the puerperium: O00-O9A
+* Congenital malformations, deformations and chromosomal anomalies: Q00-Q99  
+* Symptoms, signs, and abnormal clinical and laboratory findings, not elsewhere classified: R00-R99  
+* Codes for special purposes: U00-U85
+  * COVID-19: U07  
+* External causes: V01-Y89  
+  * Accidents: V01-V59  
+  * Intentional self-harm: X60-X84  
+
+## Label settings  
+```{r clean_02 label}
+noyes <- c("no", "yes")
+```
+
+## All-cause mortality  
+* All participants included in this data set is coded as `death = 1`
+```{r clean_02 all-cause}
+death_cause %<>%
+  mutate(death = 1)
+```
+
+## Infections: A00-B99, L00-L08  
+
+```{r clean_02 infection}
+death_cause %<>%
+  mutate(
+    cod_infection = 
+      case_when(
+        grepl("A", cause_icd10) ~ 1,
+        grepl("B", cause_icd10) ~ 1,
+        grepl("L0", cause_icd10) ~ 1,
+        TRUE ~ 0),
+    cod_infection =
+      factor(
+        cod_infection, 
+        levels = c(0, 1), 
+        labels = noyes
+      )
+  )
+
+table(death_cause$cod_infection, useNA = "ifany")
+```
+
+## Neoplasms: C00-D48  
+```{r clean_02 neoplasm}
+benign_neoplasm <- c("D1", "D2", "D3", "D4")
+
+death_cause %<>%
+  mutate(
+    cod_neoplasm = 
+      case_when(
+        grepl("C", cause_icd10) ~ 1,
+        grepl(paste(benign_neoplasm, collapse = "|"), cause_icd10) ~ 1,
+        TRUE ~ 0
+      ),
+    cod_neoplasm =
+      factor(
+        cod_neoplasm,
+        levels = c(0, 1),
+        labels = noyes
+      )
+  )
+
+table(death_cause$cod_neoplasm, useNA = "ifany")
+```
+
+### Cancer: C00-C97    
+```{r clean_02 cancer}
+death_cause %<>%
+  mutate(
+    cod_cancer = 
+      case_when(
+        grepl("C", cause_icd10) ~ 1,
+        TRUE ~ 0
+      ),
+    cod_cancer = 
+      factor(
+        cod_cancer,
+        levels = c(0, 1),
+        labels = noyes
+      )
+  )
+
+table(death_cause$cod_cancer, useNA = "ifany")
+```
+
+#### Solid cancers: C00-C80    
+```{r clean_02 cancer_solid}
+cancer_solid <- c("C0", "C1", "C2", "C3", "C4", "C5", "C6", "C7", "C80")
+
+death_cause %<>%
+  mutate(
+    cod_cancer_solid = 
+      case_when(
+        grepl(paste(cancer_solid, collapse = "|"), cause_icd10) ~ 1,
+        TRUE ~ 0
+      ),
+    cod_cancer_solid = 
+      factor(
+        cod_cancer_solid,
+        levels = c(0, 1),
+        labels = noyes
+      )
+  )
+
+table(death_cause$cod_cancer_solid, useNA = "ifany")
+```
+
+#### Hematologic cancers: C81-C96  
+```{r clean_02 cancer_blood}
+cancer_blood <- c("C81", "C82", "C83", "C84", "C85", "C86", "C87", "C88", "C89", 
+                  "C90", "C91", "C92", "C93", "C94", "C95", "C96")
+
+death_cause %<>%
+  mutate(
+    cod_cancer_blood = 
+      case_when(
+        grepl(paste(cancer_blood, collapse = "|"), cause_icd10) ~ 1,
+        TRUE ~ 0
+      ),
+    cod_cancer_blood = 
+      factor(
+        cod_cancer_blood,
+        levels = c(0, 1),
+        labels = noyes
+      )
+  )
+
+table(death_cause$cod_cancer_blood, useNA = "ifany")
+```
+
+#### Malignant neoplasms of lip, oral cavity, and pharynx
+* ICD10 C00-C14   
+```{r clean_02 cancer_head_neck}
+cancer_head_neck <- c("C0", "C10", "C11", "C12", "C13", "C14")
+
+death_cause %<>%
+  mutate(
+    cod_cancer_head_neck = 
+      case_when(
+        grepl(paste(cancer_head_neck, collapse = "|"), cause_icd10) ~ 1,
+        TRUE ~ 0
+      ),
+    cod_cancer_head_neck = 
+      factor(
+        cod_cancer_head_neck,
+        levels = c(0, 1),
+        labels = noyes
+      )
+  )
+
+table(death_cause$cod_cancer_head_neck, useNA = "ifany")
+```
+
+#### Malignant neoplasms of digestive organs
+* ICD10 C15-C26  
+```{r clean_02 cancer_gi}
+cancer_gi <- c("C15", "C16", "C17", "C18", "C19", "C20", "C21", "C22", "C23", "C24", "C25", "C26")
+
+death_cause %<>%
+  mutate(
+    cod_cancer_gi = 
+      case_when(
+        grepl(paste(cancer_gi, collapse = "|"), cause_icd10) ~ 1,
+        TRUE ~ 0
+      ),
+    cod_cancer_gi = 
+      factor(
+        cod_cancer_gi,
+        levels = c(0, 1),
+        labels = noyes
+      )
+  )
+
+table(death_cause$cod_cancer_gi, useNA = "ifany")
+```
+
+#### Malignant neoplasms of respiratory and intrathoracic organs  
+* ICD10 C30-C39  
+```{r clean_02 cancer_resp}
+cancer_resp <- c("C30", "C31", "C32", "C33", "C34", "C37", "C38", "C39")
+
+death_cause %<>%
+  mutate(
+    cod_cancer_resp = 
+      case_when(
+        grepl(paste(cancer_resp, collapse = "|"), cause_icd10) ~ 1,
+        TRUE ~ 0
+      ),
+    cod_cancer_resp = 
+      factor(
+        cod_cancer_resp,
+        levels = c(0, 1),
+        labels = noyes
+      )
+  )
+
+table(death_cause$cod_cancer_resp, useNA = "ifany")
+```
+
+#### Malignant neoplasms of bone and articular cartilage    
+* ICD10 C40-C41  
+```{r clean_02 cancer_bone}
+cancer_bone <- c("C40", "C41")
+
+death_cause %<>%
+  mutate(
+    cod_cancer_bone = 
+      case_when(
+        grepl(paste(cancer_bone, collapse = "|"), cause_icd10) ~ 1,
+        TRUE ~ 0
+      ),
+    cod_cancer_bone = 
+      factor(
+        cod_cancer_bone,
+        levels = c(0, 1),
+        labels = noyes
+      )
+  )
+
+table(death_cause$cod_cancer_bone, useNA = "ifany")
+```
+
+#### Melanoma and other malignant neoplasms of skin  
+* ICD10 C43
+* Non-melanoma skin cancer (C44) is not considered as a cancer outcome    
+```{r clean_02 cancer_skin}
+death_cause %<>%
+  mutate(
+    cod_cancer_skin = 
+      case_when(
+        grepl("C43", cause_icd10) ~ 1,
+        TRUE ~ 0
+      ),
+    cod_cancer_skin = 
+      factor(
+        cod_cancer_skin,
+        levels = c(0, 1),
+        labels = noyes
+      )
+  )
+
+table(death_cause$cod_cancer_skin, useNA = "ifany")
+```
+
+#### Malignant neoplasms of mesothelial and soft tissue  
+* ICD10 C45-C49  
+```{r clean_02 cancer_soft_tissue}
+cancer_soft_tissue <- c("C45", "C46", "C47", "C48", "C49")
+
+death_cause %<>%
+  mutate(
+    cod_cancer_soft_tissue = 
+      case_when(
+        grepl(paste(cancer_soft_tissue, collapse = "|"), cause_icd10) ~ 1,
+        TRUE ~ 0
+      ),
+    cod_cancer_soft_tissue = 
+      factor(
+        cod_cancer_soft_tissue,
+        levels = c(0, 1),
+        labels = noyes
+      )
+  )
+
+table(death_cause$cod_cancer_soft_tissue, useNA = "ifany")
+```
+
+#### Malignant neoplasm of breast  
+* ICD10 C50  
+```{r clean_02 cancer_breast}
+death_cause %<>%
+  mutate(
+    cod_cancer_breast = 
+      case_when(
+        grepl("C50", cause_icd10) ~ 1,
+        TRUE ~ 0
+      ),
+    cod_cancer_breast = 
+      factor(
+        cod_cancer_breast,
+        levels = c(0, 1),
+        labels = noyes
+      )
+  )
+
+table(death_cause$cod_cancer_breast, useNA = "ifany")
+```
+
+#### Malignant neoplasms of female genital organs  
+* ICD10 C51-C58  
+```{r clean_02 cancer_female}
+cancer_female <- c("C51", "C52", "C53", "C54", "C55", "C56", "C57", "C58")
+
+death_cause %<>%
+  mutate(
+    cod_cancer_female = 
+      case_when(
+        grepl(paste(cancer_female, collapse = "|"), cause_icd10) ~ 1,
+        TRUE ~ 0
+      ),
+    cod_cancer_female = 
+      factor(
+        cod_cancer_female,
+        levels = c(0, 1),
+        labels = noyes
+      )
+  )
+
+table(death_cause$cod_cancer_female, useNA = "ifany")
+```
+
+#### Malignant neoplasms of male genital organs  
+* ICD10 C60-C63
+```{r clean_02 cancer_male}
+cancer_male <- c("C60", "C61", "C62", "C63")
+
+death_cause %<>%
+  mutate(
+    cod_cancer_male = 
+      case_when(
+        grepl(paste(cancer_male, collapse = "|"), cause_icd10) ~ 1,
+        TRUE ~ 0
+      ),
+    cod_cancer_male = 
+      factor(
+        cod_cancer_male,
+        levels = c(0, 1),
+        labels = noyes
+      )
+  )
+
+table(death_cause$cod_cancer_male, useNA = "ifany")
+```
+
+#### Malignant neoplasms of urinary tract  
+* ICD10 C64-C68  
+```{r clean_02 cancer_urinary}
+cancer_urinary <- c("C64", "C65", "C66", "C67", "C68")
+
+death_cause %<>%
+  mutate(
+    cod_cancer_urinary = 
+      case_when(
+        grepl(paste(cancer_urinary, collapse = "|"), cause_icd10) ~ 1,
+        TRUE ~ 0
+      ),
+    cod_cancer_urinary = 
+      factor(
+        cod_cancer_urinary,
+        levels = c(0, 1),
+        labels = noyes
+      )
+  )
+
+table(death_cause$cod_cancer_urinary, useNA = "ifany")
+```
+
+#### Malignant neoplasms of eye, brain, and other parts of central nervous system  
+* ICD10 C69-C72  
+```{r clean_02 cancer_cns}
+cancer_cns <- c("C69", "C70", "C71", "C72")
+
+death_cause %<>%
+  mutate(
+    cod_cancer_cns = 
+      case_when(
+        grepl(paste(cancer_cns, collapse = "|"), cause_icd10) ~ 1,
+        TRUE ~ 0
+      ),
+    cod_cancer_cns = 
+      factor(
+        cod_cancer_cns,
+        levels = c(0, 1),
+        labels = noyes
+      )
+  )
+
+table(death_cause$cod_cancer_cns, useNA = "ifany")
+```
+
+#### Malignant neoplasms of thyroid and other endocrine glands  
+* ICD10 C73-C75  
+```{r clean_02 cancer_endo}
+cancer_endo <- c("C73", "C74", "C75")
+
+death_cause %<>%
+  mutate(
+    cod_cancer_endo = 
+      case_when(
+        grepl(paste(cancer_endo, collapse = "|"), cause_icd10) ~ 1,
+        TRUE ~ 0
+      ),
+    cod_cancer_endo = 
+      factor(
+        cod_cancer_endo,
+        levels = c(0, 1),
+        labels = noyes
+      )
+  )
+
+table(death_cause$cod_cancer_endo, useNA = "ifany")
+```
+
+#### Malignant neoplasms of ill-defined, secondary and unspecified sites  
+* ICD10 C76-C80  
+```{r clean_02 cancer_uns}
+cancer_uns <- c("C76", "C77", "C78", "C79", "C80")
+
+death_cause %<>%
+  mutate(
+    cod_cancer_uns = 
+      case_when(
+        grepl(paste(cancer_uns, collapse = "|"), cause_icd10) ~ 1,
+        TRUE ~ 0
+      ),
+    cod_cancer_uns = 
+      factor(
+        cod_cancer_uns,
+        levels = c(0, 1),
+        labels = noyes
+      )
+  )
+
+table(death_cause$cod_cancer_uns, useNA = "ifany")
+```
+
+#### Lymphomas  
+* ICD10 C81-C86
+```{r clean_02 cancer_lymphoma}
+cancer_lymphoma <- c("C81", "C82", "C83", "C84", "C85", "C86")
+
+death_cause %<>%
+  mutate(
+    cod_cancer_lymphoma = 
+      case_when(
+        grepl(paste(cancer_lymphoma, collapse = "|"), cause_icd10) ~ 1,
+        TRUE ~ 0
+      ),
+    cod_cancer_lymphoma = 
+      factor(
+        cod_cancer_lymphoma,
+        levels = c(0, 1),
+        labels = noyes
+      )
+  )
+
+table(death_cause$cod_cancer_lymphoma, useNA = "ifany")
+```
+
+#### Malignant immunoproliferative diseases  
+* ICD10 C88
+```{r clean_02 cancer_ipd}
+death_cause %<>%
+  mutate(
+    cod_cancer_ipd = 
+      case_when(
+        grepl("C88", cause_icd10) ~ 1,
+        TRUE ~ 0
+      ),
+    cod_cancer_ipd = 
+      factor(
+        cod_cancer_ipd,
+        levels = c(0, 1),
+        labels = noyes
+      )
+  )
+
+table(death_cause$cod_cancer_ipd, useNA = "ifany")
+```
+
+#### Multiple myeloma and malignant plasma cell neoplasms  
+* ICD10 C90
+```{r clean_02 cancer_mm}
+death_cause %<>%
+  mutate(
+    cod_cancer_mm = 
+      case_when(
+        grepl("C90", cause_icd10) ~ 1,
+        TRUE ~ 0
+      ),
+    cod_cancer_mm = 
+      factor(
+        cod_cancer_mm,
+        levels = c(0, 1),
+        labels = noyes
+      )
+  )
+
+table(death_cause$cod_cancer_mm, useNA = "ifany")
+```
+
+#### Leukemias  
+* ICD10 C91-C95
+```{r clean_02 cancer_leukemia}
+cancer_leukemia <- c("C91", "C92", "C93", "C94", "C95")
+
+death_cause %<>%
+  mutate(
+    cod_cancer_leukemia = 
+      case_when(
+        grepl(paste(cancer_leukemia, collapse = "|"), cause_icd10) ~ 1,
+        TRUE ~ 0
+      ),
+    cod_cancer_leukemia = 
+      factor(
+        cod_cancer_leukemia,
+        levels = c(0, 1),
+        labels = noyes
+      )
+  )
+
+table(death_cause$cod_cancer_leukemia, useNA = "ifany")
+```
+
+#### Other and unspecified malignant neoplasms of lymphoid, hematopoietic and related tissue  
+* ICD10 C96  
+```{r clean_02 cancer_blood_uns}
+death_cause %<>%
+  mutate(
+    cod_cancer_blood_uns = 
+      case_when(
+        grepl("C96", cause_icd10) ~ 1,
+        TRUE ~ 0
+      ),
+    cod_cancer_blood_uns = 
+      factor(
+        cod_cancer_blood_uns,
+        levels = c(0, 1),
+        labels = noyes
+      )
+  )
+
+table(death_cause$cod_cancer_blood_uns, useNA = "ifany")
+```
+
+#### Malignant neoplasms of independent (primary) multiple sites  
+* ICD10 C97
+```{r clean_02 cancer_multiple}
+death_cause %<>%
+  mutate(
+    cod_cancer_multiple = 
+      case_when(
+        grepl("C97", cause_icd10) ~ 1,
+        TRUE ~ 0
+      ),
+    cod_cancer_multiple = 
+      factor(
+        cod_cancer_multiple,
+        levels = c(0, 1),
+        labels = noyes
+      )
+  )
+
+table(death_cause$cod_cancer_multiple, useNA = "ifany")
+```
+
+### Benign neoplasms 
+```{r clean_02 benign neoplasms}
+death_cause %<>%
+  mutate(
+    cod_benign_neoplasm = 
+      case_when(
+        grepl(paste(benign_neoplasm, collapse = "|"), cause_icd10) ~ 1,
+        TRUE ~ 0
+      ),
+    cod_benign_neoplasm = 
+      factor(
+        cod_benign_neoplasm,
+        levels = c(0, 1),
+        labels = noyes
+      )
+  )
+
+table(death_cause$cod_benign_neoplasm, useNA = "ifany")
+```
+
+#### Polycythemia vera  
+* ICD10 D45  
+```{r clean_02 pv}
+death_cause %<>%
+  mutate(
+    cod_pv = 
+      case_when(
+        grepl("D45", cause_icd10) ~ 1,
+        TRUE ~ 0
+      ),
+    cod_pv = 
+      factor(
+        cod_pv,
+        levels = c(0, 1),
+        labels = noyes
+      )
+  )
+
+table(death_cause$cod_pv, useNA = "ifany")
+```
+
+#### Myelodysplastic syndromes  
+* ICD10 D46  
+```{r clean_02 mds}
+death_cause %<>%
+  mutate(
+    cod_mds = 
+      case_when(
+        grepl("D46", cause_icd10) ~ 1,
+        TRUE ~ 0
+      ),
+    cod_mds = 
+      factor(
+        cod_mds,
+        levels = c(0, 1),
+        labels = noyes
+      )
+  )
+
+table(death_cause$cod_mds, useNA = "ifany")
+```
+
+#### Other neoplasms of uncertain or unknown behavior of lymphoid, hematopoietic and related tissue
+* ICD10 D47  
+```{r clean_02 unknown_blood}
+death_cause %<>%
+  mutate(
+    cod_unknown_blood = 
+      case_when(
+        grepl("D47", cause_icd10) ~ 1,
+        TRUE ~ 0
+      ),
+    cod_unknown_blood = 
+      factor(
+        cod_unknown_blood,
+        levels = c(0, 1),
+        labels = noyes
+      )
+  )
+
+table(death_cause$cod_unknown_blood, useNA = "ifany")
+```
+
+## Benign diseases of the blood: D50-D89  
+```{r clean_02 benign blood}
+benign_blood <- c("D5", "D6", "D7", "D8")
+
+death_cause %<>%
+  mutate(
+    cod_blood = 
+      case_when(
+        grepl(paste(benign_blood, collapse = "|"), cause_icd10) ~ 1,
+        TRUE ~ 0
+      ),
+    cod_blood = 
+      factor(
+        cod_blood,
+        levels = c(0, 1),
+        labels = noyes
+      )
+  )
+
+table(death_cause$cod_blood, useNA = "ifany")
+```
+
+## Endocrine disorders: E00-E90  
+```{r clean_02 endocrine}
+death_cause %<>%
+  mutate(
+    cod_endocrine = 
+      case_when(
+        grepl("E", cause_icd10) ~ 1,
+        TRUE ~ 0
+      ),
+    cod_endocrine =
+      factor(
+        cod_endocrine, 
+        levels = c(0, 1),
+        labels = noyes
+      )
+  )
+
+table(death_cause$cod_endocrine, useNA = "ifany")
+```
+
+## Mental and behavioral disorders: F00-F89  
+```{r clean_02 mental}
+death_cause %<>%
+  mutate(
+    cod_mental = 
+      case_when(
+        grepl("F", cause_icd10) ~ 1,
+        TRUE ~ 0
+      ),
+    cod_mental = 
+      factor(
+        cod_mental,
+        levels = c(0, 1), 
+        labels = noyes
+      )
+  )
+
+table(death_cause$cod_mental, useNA = "ifany")
+```
+
+## Neurological disorders: G00-G99  
+```{r clean_02 neuro}
+death_cause %<>%
+  mutate(
+    cod_neuro = 
+      case_when(
+        grepl("G", cause_icd10) ~ 1,
+        TRUE ~ 0
+      ),
+    cod_neuro = 
+      factor(
+        cod_neuro,
+        levels = c(0, 1),
+        labels = noyes
+      )
+  )
+
+table(death_cause$cod_neuro, useNA = "ifany")
+```
+
+### Neurodenegerative diseases: G30, G31  
+```{r clean_02 neuro_nds}
+death_cause %<>%
+  mutate(
+    cod_neuro_nds = 
+      case_when(
+        grepl("G30", cause_icd10) ~ 1,
+        grepl("G31", cause_icd10) ~ 1,
+        TRUE ~ 0
+      ),
+    cod_neuro_nds = 
+      factor(
+        cod_neuro_nds,
+        levels = c(0, 1),
+        labels = noyes
+      )
+  )
+
+table(death_cause$cod_neuro_nds, useNA = "ifany")
+```
+
+## Eye and adnexa disorders: H00-H59
+```{r clean_02 eye}
+eye <- c("H0", "H1", "H2", "H3", "H4", "H5")
+
+death_cause %<>%
+  mutate(
+    cod_eye = 
+      case_when(
+        grepl(paste(eye, collapse = "|"), cause_icd10) ~ 1,
+        TRUE ~ 0
+      ),
+    cod_eye = 
+      factor(
+        cod_eye,
+        levels = c(0, 1), 
+        labels = noyes
+      )
+  )
+
+table(death_cause$cod_eye, useNA = "ifany")
+```
+
+## Ear and mastoid process disorders: H60-H95
+```{r clean_02 ear}
+ear <- c("H6", "H7", "H8", "H9")
+
+death_cause %<>%
+  mutate(
+    cod_ear = 
+      case_when(
+        grepl(paste(ear, collapse = "|"), cause_icd10) ~ 1,
+        TRUE ~ 0
+      ),
+    cod_ear = 
+      factor(
+        cod_ear,
+        levels = c(0, 1), 
+        labels = noyes
+      )
+  )
+
+table(death_cause$cod_ear, useNA = "ifany")
+```
+
+## Circulatory disorders: I00-I99  
+```{r clean_02 cardio}
+death_cause %<>%
+  mutate(
+    cod_cardio = 
+      case_when(
+        grepl("I", cause_icd10) ~ 1,
+        TRUE ~ 0
+      ),
+    cod_cardio = 
+      factor(
+        cod_cardio,
+        levels = c(0, 1), 
+        labels = noyes
+      )
+  )
+
+table(death_cause$cod_cardio, useNA = "ifany")
+```
+
+### Acute myocardial infarction  
+```{r clean_02 cardio_ami}
+death_cause %<>%
+  mutate(
+    cod_cardio_ami = 
+      case_when(
+        grepl("I21", cause_icd10) ~ 1,
+        TRUE ~ 0
+      ),
+    cod_cardio_ami = 
+      factor(
+        cod_cardio_ami,
+        levels = c(0, 1), 
+        labels = noyes
+      )
+  )
+
+table(death_cause$cod_cardio_ami, useNA = "ifany")
+```
+
+### Chronic ischemic heart disease  
+```{r clean_02 cardio_cihd}
+death_cause %<>%
+  mutate(
+    cod_cardio_cihd = 
+      case_when(
+        grepl("I25", cause_icd10) ~ 1,
+        TRUE ~ 0
+      ),
+    cod_cardio_cihd = 
+      factor(
+        cod_cardio_cihd,
+        levels = c(0, 1), 
+        labels = noyes
+      )
+  )
+
+table(death_cause$cod_cardio_cihd, useNA = "ifany")
+```
+
+### Cerebrovascular disease  
+```{r clean_02 cardio_cv}
+death_cause %<>%
+  mutate(
+    cod_cardio_cv = 
+      case_when(
+        grepl("I6", cause_icd10) ~ 1,
+        TRUE ~ 0
+      ),
+    cod_cardio_cv = 
+      factor(
+        cod_cardio_cv,
+        levels = c(0, 1), 
+        labels = noyes
+      )
+  )
+
+table(death_cause$cod_cardio_cv, useNA = "ifany")
+```
+
+## Respiratory disorders: J00-J99  
+```{r clean_02 pulmo}
+death_cause %<>%
+  mutate(
+    cod_pulmo = 
+      case_when(
+        grepl("J", cause_icd10) ~ 1,
+        TRUE ~ 0
+      ),
+    cod_pulmo = 
+      factor(
+        cod_pulmo,
+        levels = c(0, 1),
+        labels = noyes
+      )
+  )
+
+table(death_cause$cod_pulmo, useNA = "ifany")
+```
+
+### Chronic lower respiratory disease  
+```{r clean_02 pulmo_clrd}
+death_cause %<>%
+  mutate(
+    cod_pulmo_clrd = 
+      case_when(
+        grepl("J4", cause_icd10) ~ 1,
+        TRUE ~ 0
+      ),
+    cod_pulmo_clrd = 
+      factor(
+        cod_pulmo_clrd,
+        levels = c(0, 1),
+        labels = noyes
+      )
+  )
+
+table(death_cause$cod_pulmo_clrd, useNA = "ifany")
+```
+
+## Digestive disorders: K00-K95  
+```{r clean_02 gi}
+death_cause %<>%
+  mutate(
+    cod_gi = 
+      case_when(
+        grepl("K", cause_icd10) ~ 1,
+        TRUE ~ 0
+      ), 
+    cod_gi = 
+      factor(
+        cod_gi, 
+        levels = c(0, 1), 
+        labels = noyes
+      )
+  )
+
+table(death_cause$cod_gi, useNA = "ifany")
+```
+
+### Upper GI diseases  
+```{r clean_02 gi_ugi}
+death_cause %<>%
+  mutate(
+    cod_gi_ugi = 
+      case_when(
+        grepl("K2", cause_icd10) ~ 1,
+        grepl("K31", cause_icd10) ~ 1, 
+        TRUE ~ 0
+      ), 
+    cod_gi_ugi = 
+      factor(
+        cod_gi_ugi, 
+        levels = c(0, 1), 
+        labels = noyes
+      )
+  )
+
+table(death_cause$cod_gi_ugi, useNA = "ifany")
+```
+
+### Lower GI
+```{r clean_02 gi_lgi}
+death_cause %<>%
+  mutate(
+    cod_gi_lgi = 
+      case_when(
+        grepl("K5", cause_icd10) ~ 1,
+        grepl("K61", cause_icd10) ~ 1, 
+        grepl("K62", cause_icd10) ~ 1, 
+        grepl("K63", cause_icd10) ~ 1, 
+        TRUE ~ 0
+      ), 
+    cod_gi_lgi = 
+      factor(
+        cod_gi_lgi, 
+        levels = c(0, 1), 
+        labels = noyes
+      )
+  )
+
+table(death_cause$cod_gi_lgi, useNA = "ifany")
+```
+
+### Liver diseases  
+```{r clean_02 gi_liver}
+death_cause %<>%
+  mutate(
+    cod_gi_liver = 
+      case_when(
+        grepl("K7", cause_icd10) ~ 1,
+        TRUE ~ 0
+      ), 
+    cod_gi_liver = 
+      factor(
+        cod_gi_liver, 
+        levels = c(0, 1), 
+        labels = noyes
+      )
+  )
+
+table(death_cause$cod_gi_liver, useNA = "ifany")
+```
+
+## Diseases of the skin and subcutaneous tissue: L10-L99  
+```{r clean_02 skin}
+skin <- c("L1", "L2", "L3", "L4", "L5", "L6", "L7", "L8", "L9")
+
+death_cause %<>%
+  mutate(
+    cod_skin = 
+      case_when(
+        grepl(paste(skin, collapse = "|"), cause_icd10) ~ 1,
+        TRUE ~ 0
+      ),
+    cod_skin = 
+      factor(
+        cod_skin,
+        levels = c(0, 1),
+        labels = noyes
+      )
+  )
+
+table(death_cause$cod_skin, useNA = "ifany")
+```
+
+## Diseases of the musculoskeletal system and connective tissue: M00-M99  
+```{r clean_02 muscle}
+death_cause %<>%
+  mutate(
+    cod_muscle = 
+      case_when(
+        grepl("M", cause_icd10) ~ 1,
+        TRUE ~ 0
+      ),
+    cod_muscle = 
+      factor(
+        cod_muscle,
+        levels = c(0, 1),
+        labels = noyes
+      )
+  )
+
+table(death_cause$cod_muscle, useNA = "ifany")
+```
+
+## Genitourinary disorders: N00-N99   
+```{r clean_02 gu}
+death_cause %<>%
+  mutate(
+    cod_gu = 
+      case_when(
+        grepl("N", cause_icd10) ~ 1,
+        TRUE ~ 0
+      ),
+    cod_gu = 
+      factor(
+        cod_gu,
+        levels = c(0, 1),
+        labels = noyes
+      )
+  )
+
+table(death_cause$cod_gu, useNA = "ifany")
+```
+
+## Pregnancy, childbirth and the puerperium: O00-O9A  
+```{r clean_02 pregnancy}
+death_cause %<>%
+  mutate(
+    cod_pregnancy = 
+      case_when(
+        grepl("O", cause_icd10) ~ 1,
+        TRUE ~ 0
+      ),
+    cod_pregnancy = 
+      factor(
+        cod_pregnancy,
+        levels = c(0, 1),
+        labels = noyes
+      )
+  )
+
+table(death_cause$cod_pregnancy, useNA = "ifany")
+```
+
+## Congenital malformations, deformations and chromosomal anomalies: Q00-Q99   
+```{r clean_02 congenital}
+death_cause %<>%
+  mutate(
+    cod_congenital = 
+      case_when(
+        grepl("Q", cause_icd10) ~ 1,
+        TRUE ~ 0
+      ),
+    cod_congenital = 
+      factor(
+        cod_congenital, 
+        levels = c(0, 1),
+        labels = noyes
+      )
+  )
+
+table(death_cause$cod_congenital, useNA = "ifany")
+```
+
+## Symptoms, signs, and abnormal clinical and laboratory findings, not elsewhere classified: R00-R99  
+```{r clean_02 uns}
+death_cause %<>%
+  mutate(
+    cod_uns = 
+      case_when(
+        grepl("R", cause_icd10) ~ 1,
+        TRUE ~ 0
+      ),
+    cod_uns = 
+      factor(
+        cod_uns, 
+        levels = c(0, 1),
+        labels = noyes
+      )
+  )
+
+table(death_cause$cod_uns, useNA = "ifany")
+```
+
+## Codes for special purposes: U00-U85  
+```{r clean_02 special}
+death_cause %<>%
+  mutate(
+    cod_special = 
+      case_when(
+        grepl("U", cause_icd10) ~ 1,
+        TRUE ~ 0
+      ),
+    cod_special = 
+      factor(
+        cod_special, 
+        levels = c(0, 1),
+        labels = noyes
+      )
+  )
+
+table(death_cause$cod_special, useNA = "ifany")
+```
+
+### COVID-19  
+```{r clean_02 covid}
+death_cause %<>%
+  mutate(
+    cod_covid = 
+      case_when(
+        grepl("U07", cause_icd10) ~ 1,
+        TRUE ~ 0
+      ),
+    cod_covid = 
+      factor(
+        cod_covid, 
+        levels = c(0, 1),
+        labels = noyes
+      )
+  )
+
+table(death_cause$cod_covid, useNA = "ifany")
+```
+
+## External causes: V01-Y89    
+```{r clean_02 external}
+death_cause %<>%
+  mutate(
+    cod_external = 
+      case_when(
+        grepl("V", cause_icd10) ~ 1,
+        grepl("W", cause_icd10) ~ 1,
+        grepl("X", cause_icd10) ~ 1,
+        grepl("Y", cause_icd10) ~ 1, 
+        TRUE ~ 0
+      ),
+    cod_external = 
+      factor(
+        cod_external,
+        levels = c(0, 1), 
+        labels = noyes
+      )
+  )
+
+table(death_cause$cod_external, useNA = "ifany")
+```
+
+### Accidents  
+```{r clean_02 external_accident}
+external_accident <- c("V0", "V1", "V2", "V3", "V4", "V5")
+
+death_cause %<>%
+  mutate(
+    cod_external_accident = 
+      case_when(
+        grepl(paste(external_accident, collapse = "|"), cause_icd10) ~ 1,
+        TRUE ~ 0
+      ),
+    cod_external_accident = 
+      factor(
+        cod_external_accident,
+        levels = c(0, 1), 
+        labels = noyes
+      )
+  )
+
+table(death_cause$cod_external_accident, useNA = "ifany")
+```
+
+### Intentional self-harm  
+```{r clean_02 external_selfharm}
+external_selfharm <- c("X6", "X7", "X80", "X81", "X82", "X83", "X84")
+
+death_cause %<>%
+  mutate(
+    cod_external_selfharm = 
+      case_when(
+        grepl(paste(external_selfharm, collapse = "|"), cause_icd10) ~ 1,
+        TRUE ~ 0
+      ),
+    cod_external_selfharm = 
+      factor(
+        cod_external_selfharm,
+        levels = c(0, 1), 
+        labels = noyes
+      )
+  )
+
+table(death_cause$cod_external_selfharm, useNA = "ifany")
+```
+
+# Save data  
+* Long to wide format with cause of death variables as each variable  
+```{r clean_02 save}
+death_cause %<>%
+  mutate(eid = as.character(eid)) %>%
+  rename(id = eid)
+
+death_cause %>%
+  skimr::skim_without_charts()
+
+death_cause %>%
+  saveRDS("ukb_heteroplasmy_mortality_02_mortality.rds")
+```
+
+
