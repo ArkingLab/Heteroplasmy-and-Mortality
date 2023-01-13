@@ -7,7 +7,7 @@ library(tidyverse)
 library(data.table)
 
 ## Load in files from MitoHPC output
-counts = read.table('mutect2.mutect2.05.all.0516.vcf', skip = 52)
+#counts = read.table('mutect2.mutect2.05.all.0516.vcf', skip = 52)
 counts = read.table('mutect2.mutect2.05.vcf', skip = 60)
 colnames(counts) = c('CHR','POS','ID','REF','ALT','QUAL','FILTER','INFO','FORMAT','SAMPLE')
 counts$SAMPLE = as.numeric(substr(counts$SAMPLE,1,7))
@@ -53,12 +53,8 @@ AP = test[grepl('AP',test)]
 APS = test[grepl('APS',test)]
 
 ## haplogroup
-countshaplo1 = counts[grepl('HG=',counts$INFO),]
-countshaplo2 = counts[!grepl('HG=',counts$INFO),]
-countshaplo1$Haplogroup = substr(HG,4,15)
-counts = rbind(countshaplo1,countshaplo2)
-rm(countshaplo1)
-rm(countshaplo2)
+haplogroup = read.table('MitoHPC/mutect2.haplogroup1.tab',header=TRUE)
+counts = merge(counts,haplogroup,by='SAMPLE')
 
 ## Get genes and complex information
 countstest = counts[!grepl('DLOOP',counts$INFO),]
@@ -109,20 +105,6 @@ rm(countstrn)
 ## unique
 counts$unique = paste(paste(counts$POS, counts$REF, sep = '_'), counts$ALT, sep = '_')
 
-## mito score (original version)
-scores = fread('mito_scores.tsv')
-scoresonly = scores
-scoresonly$unique = paste(paste(scoresonly$POS, scoresonly$REF, sep = '_'), scoresonly$ALT, sep = '_')
-scoresonly = scoresonly[!duplicated(scoresonly$unique),]
-scoresonly = scoresonly[,c(1:3,5)]
-rm(scores)
-
-countsscore = merge(counts, scoresonly, by = c('POS','REF','ALT'), all.x = TRUE)
-colnames(countsscore) = c(colnames(countsscore)[1:18],'mito_score')
-counts = countsscore
-rm(scoresonly)
-rm(countsscore)
-
 ## new mito score
 scores1 = fread('new_mito_score.tsv')
 scores1only = scores1
@@ -136,40 +118,17 @@ rm(countsscore)
 rm(scores1)
 rm(scores1only)
 
-## Missense score
-scores2 = fread('new_missense_score.tsv')
-scores2only = scores2[,c(1:3,4:7)]
-scores2only$unique = paste(paste(scores2only$POS, scores2only$REF, sep = '_'), scores2only$ALT, sep = '_')
-scores2test = scores2only[which(duplicated(scores2only$unique)),]
-scores2left = scores2only[!scores2only$unique %in% scores2test$unique,]
-scores2test = scores2only[scores2only$unique %in% scores2test$unique,]
-
-## assign to ATP6 and ND4 only
-scores2test1 = scores2test[(scores2test$locus == 'MT-ATP6' | scores2test$locus == 'MT-ND4'),]
-scores2new = rbind(scores2left, scores2test1)
-scores2 = scores2new[,c(1:3,5:7)]
-countsscore = merge(counts, scores2, by = c('POS','REF','ALT'), all.x = TRUE)
-colnames(countsscore) = c(colnames(countsscore)[1:21],'mmc_consequence','mmc_score','mmc_class')
-counts = countsscore
-rm(countsscore)
-rm(scores2)
-rm(scores2left)
-rm(scores2new)
-rm(scores2only)
-rm(scores2test)
-rm(scores2test1)
-
-## Get ap
+## Other scores
 test = unlist(strsplit(counts$INFO, split=';'))
-HG = test[grepl('HG',test)]
-NONSYN = test[grepl('NONSYN',test)]
-STOP = test[grepl('STOP',test)]
 AP = test[grepl('AP',test)]
 APS = test[grepl('APS',test)]
+MMC = test[grepl('MMC',test)]
+MLC = test[grepl('MLC',test)]
+MCC = test[grepl('MCC',test)]
 
-AP_label = AP[seq(1,2078854,by=2)]
-AP_score = AP[seq(2,2078854,by=2)]
-
+## Apogee score
+AP_label = AP[seq(1,length(AP),by=2)]
+AP_score = AP[seq(2,length(AP),by=2)]
 counts$AP_label = NA
 counts$AP_score = NA
 countsap1 = counts[grepl('APS',counts$INFO),]
@@ -179,6 +138,35 @@ countsap1$AP_score = as.numeric(substr(AP_score,5,20))
 counts = rbind(countsap1,countsap2)
 rm(countsap1)
 rm(countsap2)
+
+## Missense score
+test = unlist(strsplit(counts$INFO, split=';'))
+MMC = test[grepl('MMC',test)]
+MMC_score = MMC[seq(2,length(MMC),by=3)]
+MMC_class = MMC[seq(1,length(MMC),by=3)]
+MMC_consq = MMC[seq(3,length(MMC),by=3)]
+counts$MMC_score = NA
+counts$MMC_class = NA
+counts$MMC_consq = NA
+countsmmc1 = counts[grepl('MMC',counts$INFO),]
+countsmmc2 = counts[!grepl('MMC',counts$INFO),]
+countsmmc1$MMC_score = as.numeric(substr(MMC_score,11,50))
+countsmmc1$MMC_class = substr(MMC_class,11,50)
+countsmmc1$MMC_consq = substr(MMC_consq,11,50)
+counts = rbind(countsmmc1,countsmmc2)
+rm(countsmmc1)
+rm(countsmmc2)
+
+## protein_gene_missense_constraint; missense_OEUF (MCC)
+test = unlist(strsplit(counts$INFO, split=';'))
+MCC = test[grepl('MCC',test)]
+counts$MCC_score = NA
+countsmcc1 = counts[grepl('MCC',counts$INFO),]
+countsmcc2 = counts[!grepl('MCC',counts$INFO),]
+countsmcc1$MCC_score = as.numeric(substr(MCC,5,20))
+counts = rbind(countsmcc1,countsmcc2)
+rm(countsmcc1)
+rm(countsmcc2)
 
 ## Sep homo and het variants
 countshomo = counts[counts$AF == 1,]
