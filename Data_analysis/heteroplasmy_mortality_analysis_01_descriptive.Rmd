@@ -74,6 +74,25 @@ persample <- fread("../../data/per_sample_count_with_all_filter_0805.txt") %>%
   as.data.frame()
 ```
 
+## UKB data  
+```{r analysis_01 load data ukb}
+ukb <- readRDS("../data_cleaning/ukb_heteroplasmy_mortality_v1.rds")
+
+# set missing indicator variables to NA for factor variables  
+ukb %<>%
+  naniar::replace_with_na(
+    replace = list(
+      smk = "missing",
+      alc = "missing"
+      )
+    ) %>%
+  mutate(smk = droplevels(smk),
+         alc = droplevels(alc)) 
+
+ukb_miss <- ukb %>%
+  filter(!is.na(smk))
+```
+
 # Heteroplasmic SNVs   
 ## Total heteroplasmic SNVs  
 * total heteroplasmic snvs match whether we use `mito` data or `perpos` data (n = 74369).  
@@ -161,6 +180,14 @@ table2 <- perpos %>%
     n = n()
     )
 table2
+
+# proportions of single individual, <= 10 individuals
+table2 %>%
+  filter(count_het_cat != "None") %>%
+  mutate(
+    total = sum(n),
+    prop = round((n/total)*100, 1)
+  )
 ```
 
 # Homoplasmic SNVs   
@@ -363,6 +390,9 @@ perpos %>%
   pivot_wider(
     names_from = nonsyn,
     values_from = n
+  ) %>%
+  mutate(
+    prop = round(100*synonymous/(nonsynonymous + synonymous), 1)
   )
 ```
 
@@ -688,6 +718,25 @@ fig2c
 
 ## Proportion of possible SNVs by protein complex or genic context  
 ```{r analysis_01 figure2d}
+het_homo_table %>%
+  filter(type != "None") %>%
+  group_by(COMPLEX) %>%
+  mutate(
+    total = sum(count)
+  ) %>%
+  mutate(
+    prop = case_when(
+      COMPLEX == "D-loop" ~ total/dloop_length_x3,
+      COMPLEX == "Complex I" ~ total/I_length_x3,
+      COMPLEX == "Complex III" ~ total/III_length_x3,
+      COMPLEX == "Complex IV" ~ total/IV_length_x3,
+      COMPLEX == "Complex V" ~ total/V_length_x3,
+      COMPLEX == "rRNA" ~ total/rRNA_length_x3,
+      COMPLEX == "tRNA" ~ total/tRNA_length_x3
+    ),
+    prop = round(prop * 100, 1)
+  )
+
 fig2d <- het_homo_table %>%
   ggplot() +
   geom_bar(
@@ -835,41 +884,57 @@ fig2g <- mito %>%
 fig2g
 ```
 
-## Mean heteroplasmy count by haplogroup  
+## Adjusted mean heteroplasmy count by haplogroup  
 ```{r analysis_01 figure2h}
-fig2h <- mito %>%
-  mutate(
-    hap = factor(
-      hap, 
-      levels = c("H", "U", "JT", "N", "R0", "L", "M", "R")
-    )
-  ) %>%
-  group_by(hap) %>%
-  summarise(
-    n = n(),
-    mean = mean(het_count),
-    se = sd(het_count),
-    lci = mean - 1.96*se/sqrt(n),
-    uci = mean + 1.96*se/sqrt(n)
-  ) %>%
-  ungroup() %>%
+full <- MASS::glm.nb(het_count ~ relevel(hap, ref = "H") + rcs(age, df= 4) + sex + smk + center, data = ukb_miss)
+summary(full)
+
+mm_hc <- summary(prediction::prediction(full, at = list(hap = c("H", "U", "JT", "N", "R0", "L", "M", "R"))))
+fig2h <- mm_hc %>%
   ggplot() +
-  geom_pointrange(
-    aes(x = hap, y = mean, ymin = lci, ymax = uci)
-    ) +
+  geom_pointrange(aes(x = `at(hap)`, y = Prediction, ymin = lower, ymax = upper)) +
   scale_x_discrete("Haplogroup") +
-  scale_y_continuous(
-    "Mean heteroplasmy count \n (95% CI)", 
-    breaks = c(0.3, 0.325, 0.35, 0.375, 0.4),
-    labels = c("0.300", "0.325", "0.350", "0.375", "0.400"),
-    limits = c(0.3, 0.4)
-    ) +
+  scale_y_continuous("Adjusted mean heteroplasmy count \n (95% CI)") + 
   theme_classic() +
   theme(
     axis.title = element_text(size = 12, face = "bold"),
     axis.text = element_text(size = 10)
-    )  
+  ) 
 fig2h
+
+# fig2h <- mito %>%
+#   mutate(
+#     hap = factor(
+#       hap, 
+#       levels = c("H", "U", "JT", "N", "R0", "L", "M", "R")
+#     )
+#   ) %>%
+#   group_by(hap) %>%
+#   summarise(
+#     n = n(),
+#     mean = mean(het_count),
+#     se = sd(het_count),
+#     lci = mean - 1.96*se/sqrt(n),
+#     uci = mean + 1.96*se/sqrt(n)
+#   ) %>%
+#   ungroup() %>%
+#   ggplot() +
+#   geom_pointrange(
+#     aes(x = hap, y = mean, ymin = lci, ymax = uci)
+#     ) +
+#   scale_x_discrete("Haplogroup") +
+#   scale_y_continuous(
+#     "Mean heteroplasmy count \n (95% CI)", 
+#     breaks = c(0.3, 0.325, 0.35, 0.375, 0.4),
+#     labels = c("0.300", "0.325", "0.350", "0.375", "0.400"),
+#     limits = c(0.3, 0.4)
+#     ) +
+#   theme_classic() +
+#   theme(
+#     axis.title = element_text(size = 12, face = "bold"),
+#     axis.text = element_text(size = 10)
+#     )  
+# fig2h
 ```
 
 ## Combine plots  

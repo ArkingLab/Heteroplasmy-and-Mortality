@@ -56,30 +56,38 @@ table(ukb$smk_na, useNA = "ifany")
 table(ukb$het_count, useNA = "ifany")
 table(ukb$het_count_cat, useNA = "ifany")
 
-knots <- attributes(rms::rcs(ukb$age, df = 4))$parms
-knots
+ukb %<>%
+  mutate(
+    mutation_syn_any = ifelse(is.na(mutation_syn_any), "0", mutation_syn_any),
+    mutation_syn_any = as.numeric(mutation_syn_any),
+    mutation_nonsyn_any = ifelse(is.na(mutation_nonsyn_any), "0", mutation_nonsyn_any),
+    mutation_nonsyn_any = as.numeric(mutation_nonsyn_any)
+  )
 
 ukb_miss <- ukb %>%
   filter(!is.na(smk_na))
+
+knots <- attributes(rms::rcs(ukb_miss$age, df = 4))$parms
+knots
 ```
 
 # Age, smoking, and heteroplasmy count  
 ## Regression model    
 ### Sex  
 ```{r analysis_02 age sex het_count}
-null <- glm(het_count ~ sex, family = "poisson", data = ukb)
+null <- glm(het_count ~ sex, family = "poisson", data = ukb_miss)
 summary(null)
 
-age_sex <- glm(het_count ~ rcs(age, knots) + sex + smk_na, family = "poisson", data = ukb)
+age_sex <- glm(het_count ~ rcs(age, knots) + sex + smk_na, family = "poisson", data = ukb_miss)
 summary(age_sex)
 ```
 
 ### Smoking  
 ```{r analysis_02 age smk het_count}
-null <- glm(het_count ~ rcs(age, knots) + smk_na, family = "poisson", data = ukb)
+null <- glm(het_count ~ rcs(age, knots) + smk_na, family = "poisson", data = ukb_miss)
 summary(null)
 
-age_smk <- glm(het_count ~ rcs(age, knots)*smk_na, family = "poisson", data = ukb)
+age_smk <- glm(het_count ~ rcs(age, knots)*smk_na, family = "poisson", data = ukb_miss)
 summary(age_smk)
 
 # p for interaction  
@@ -88,7 +96,7 @@ lrtest(null, age_smk)
 
 ## Figure 3  
 ```{r analysis_02 figure3}
-fig3 <- ukb %>%
+fig3 <- ukb_miss %>%
   mutate(
     age_cat = case_when(
       age <= 45 ~ 45,
@@ -129,16 +137,16 @@ table(ukb$death, useNA = "ifany") %>%
 table(ukb_miss$death, useNA = "ifany") %>%
   addmargins() 
 
-ukb %<>%
+ukb_miss %<>%
   mutate(
     time_os = as.numeric((death_end_fu - dov)/365.25)
   )
-summary(ukb$time_os)
+summary(ukb_miss)
 ```
 
 ### Survival object  
 ```{r analysis_02 os_obj}
-os_obj <- with(ukb, Surv(time = time_os, event = death))
+os_obj <- with(ukb_miss, Surv(time = time_os, event = death))
 ```
 
 ## Cox models  
@@ -157,11 +165,55 @@ hc_table <- table(ukb_miss$het_count_cat, ukb_miss$death, useNA = "ifany") %>%
 hc_table 
 
 os_hc <- os_obj ~ as.factor(het_count_cat) + strata(center) + rcs(age, df= 4) + sex + smk  
-hc <- survival::coxph(os_hc, data = ukb)
+hc <- survival::coxph(os_hc, data = ukb_miss)
 summary(hc)
 
 coef_hc <- summary(hc)$coef[1:4, 1:3]
 coef_hc
+```
+
+### Synonymous mutation   
+```{r analysis_02 os_syn}
+syn_table <- table(ukb_miss$mutation_syn_any, ukb_miss$death, useNA = "ifany") %>%
+  unclass() %>%
+  as.data.frame() %>%
+  rename(
+    alive = `0`,
+    died = `1` 
+  ) %>%
+  mutate(
+    total = alive + died
+  )
+syn_table 
+
+os_syn <- os_obj ~ mutation_syn_any + strata(center) + rcs(age, df= 4) + sex + smk  
+syn <- survival::coxph(os_syn, data = ukb_miss)
+summary(syn)
+
+coef_syn <- summary(syn)$coef[1, 1:3]
+coef_syn
+```
+
+### Nonsynonymous mutation  
+```{r analysis_02 os_nonsyn}
+nonsyn_table <- table(ukb_miss$mutation_nonsyn_any, ukb_miss$death, useNA = "ifany") %>%
+  unclass() %>%
+  as.data.frame() %>%
+  rename(
+    alive = `0`,
+    died = `1` 
+  ) %>%
+  mutate(
+    total = alive + died
+  )
+nonsyn_table 
+
+os_nonsyn <- os_obj ~ mutation_nonsyn_any + strata(center) + rcs(age, df= 4) + sex + smk  
+nonsyn <- survival::coxph(os_nonsyn, data = ukb_miss)
+summary(nonsyn)
+
+coef_nonsyn <- summary(nonsyn)$coef[1, 1:3]
+coef_nonsyn
 ```
 
 ### Stop mutation  
@@ -179,7 +231,7 @@ stop_table <- table(ukb_miss$mutation_stop_any, ukb_miss$death, useNA = "ifany")
 stop_table 
 
 os_stop <- os_obj ~ mutation_stop_any + strata(center) + rcs(age, df= 4) + sex + smk 
-stop <- survival::coxph(os_stop, data = ukb)
+stop <- survival::coxph(os_stop, data = ukb_miss)
 summary(stop)
 
 coef_stop <- summary(stop)$coef[1, 1:3] 
@@ -201,99 +253,61 @@ mss_table <- table(ukb_miss$death, useNA = "ifany") %>%
 mss_table
 
 os_mss <- os_obj ~ mito_score_sum_lc + strata(center) + rcs(age, df= 4) + sex + smk
-mss <- survival::coxph(os_mss, data = ukb)
+mss <- survival::coxph(os_mss, data = ukb_miss)
 summary(mss)
 
 coef_mss <- summary(mss)$coef[1, 1:3]
 coef_mss
 ```
 
-### Heteroplasmy count, stop mutation, and MSS  
-```{r analysis_02 os_het_stop_mss}
-os_het_stop_mss <- os_obj ~ as.factor(het_count_cat) + mutation_stop_any + mito_score_sum_lc + strata(center) + rcs(age, df= 4) + sex + smk
-het_stop_mss <- survival::coxph(os_het_stop_mss, data = ukb)
-summary(het_stop_mss)
-
-coef_adj <- summary(het_stop_mss)$coef[1:6, 1:3]
-coef_adj
-```
-
 ## Combine result outputs  
 ```{r analysis_02 combine outputs}
 # combine unadjusted estimates to a single table  
-coef_unadj <- rbind(coef_hc, coef_stop, coef_mss) %>%
+coef <- rbind(coef_hc, coef_syn, coef_nonsyn, coef_stop, coef_mss) %>%
   as_tibble() %>%
   mutate(
-    var = c("hc1", "hc2", "hc3", "hc4", "stop", "mss")
+    var = c("hc1", "hc2", "hc3", "hc4", "syn", "nonsyn", "stop", "mss")
   ) %>%
   rename(
-    coef_unadj = coef,
-    exp_coef_unadj = `exp(coef)`,
-    se_coef_unadj = `se(coef)`
-  )
-coef_unadj
+    exp_coef = `exp(coef)`,
+    se_coef = `se(coef)`
+  ) %>%
+  dplyr::select(var, everything())
+coef
   
-# to tibble and data transformation  
-coef_adj %<>%
-  as_tibble() %>%
+# data transformation for forest plot   
+coef_all <- coef %>%
+  # add additional rows for categorical variables (1 for group name, 1 for reference) and 1 additional row for continuous variable (1 for group name)
   mutate(
-    var = c("hc1", "hc2", "hc3", "hc4", "stop", "mss")
-  ) %>%
-  rename(
-    coef_adj = coef,
-    exp_coef_adj = `exp(coef)`,
-    se_coef_adj = `se(coef)`
-  )
-coef_adj
-
-# merge the adjusted and unadjusted estimates  
-coef_all <- coef_unadj %>%
-  left_join(coef_adj, by = "var") %>%
-  # start with `var` variable  
-  select(var, everything()) %>%
-  # add 2 additional rows for categorical variables (1 for group name, 1 for reference) and 1 additional row for continuous variable (1 for group name)
-  mutate(
-    row = c(3:6, 9, 11)
+    row = c(3:6, 9, 12, 15, 17)
   ) %>%
   add_row(
-    row = c(1:2, 7:8, 10)
+    row = c(1:2, 7:8, 10:11, 13:14, 16)
   ) %>%
   arrange(row) %>%
   # add a column for group and category  
   mutate(
     Variable = 
-      c("Heteroplasmy count", "", "", "", "", "", "Nonsense mutation", "", "", "MLC score sum (MSS)", ""),
+      c("Heteroplasmy count", "", "", "", "", "", "Synonymous mutation", "", "", 
+        "Nonsynonymous mutation", "", "", "Nonsense mutation", "", "", "MLC score sum (MSS)", ""),
     Categories = 
-      c("", "0", "1", "2", "3", "4+", "", "No", "Yes", "", "Continuous")
-  ) %>%
-  # tidy the unadjusted estimates  
+      c("", "0", "1", "2", "3", "4+", "", "No", "Yes", "", "No", "Yes", "", "No", "Yes", "", "Continuous")
+  )  %>%
+  # tidy the estimates  
   mutate(
-    lci_unadj =
-      ifelse(row == 1 | row == 2 | row == 7 | row == 8 | row == 10, 1, exp(coef_unadj - 1.96*se_coef_unadj)),
-    uci_unadj =
-      ifelse(row == 1 | row == 2 | row == 7 | row == 8 | row == 10, 1, exp(coef_unadj + 1.96*se_coef_unadj)),
-    `Unadjusted` = paste(rep(" ", 25), collapse = " "),
-    `HR (95% CI)` = sprintf("%.2f (%.2f to %.2f)", exp_coef_unadj, lci_unadj, uci_unadj),
-    `HR (95% CI)` = case_when(
-      row == 2 | row == 8 ~ "Reference",
-      row == 1 | row == 7 | row == 10 ~ "",
-      TRUE ~ `HR (95% CI)`)
-    ) %>%
-  # tidy the adjusted estimates  
-  mutate(
-    lci_adj = 
-      ifelse(row == 1 | row == 2 | row == 7 | row == 8 | row == 10, 1, exp(coef_adj - 1.96*se_coef_adj)),
-    uci_adj = 
-      ifelse(row == 1 | row == 2 | row == 7 | row == 8 | row == 10, 1, exp(coef_adj + 1.96*se_coef_adj)),
-    `Mutually adjusted` = paste(rep(" ", 25), collapse = " "),
-    `Adjusted HR (95% CI)` = sprintf("%.2f (%.2f to %.2f)", exp_coef_adj, lci_adj, uci_adj),
+    lci =
+      ifelse(row == 1 | row == 2 | row == 7 | row == 8 | row == 10 | row == 11 | row == 13 | row == 14 | row == 16, 1, exp(coef - 1.96*se_coef)),
+    uci =
+      ifelse(row == 1 | row == 2 | row == 7 | row == 8 | row == 10 | row == 11 | row == 13 | row == 14 | row == 16, 1, exp(coef + 1.96*se_coef)),
+    ` ` = paste(rep(" ", 25), collapse = " "),
+    `Adjusted HR (95% CI)` = sprintf("%.2f (%.2f to %.2f)", exp_coef, lci, uci),
     `Adjusted HR (95% CI)` = case_when(
-      row == 2 | row == 8 ~ "Reference",
-      row == 1 | row == 7 | row == 10 ~ "",
+      row == 2 | row == 8 | row == 11 | row == 14 ~ "Reference",
+      row == 1 | row == 7 | row == 10 | row == 13 | row == 16 ~ "",
       TRUE ~ `Adjusted HR (95% CI)`)
     ) %>%
   dplyr::select(
-    Variable, Categories, exp_coef_unadj, lci_unadj, uci_unadj, `Unadjusted`, `HR (95% CI)`, exp_coef_adj, lci_adj, uci_adj, `Mutually adjusted`, `Adjusted HR (95% CI)`, row
+    Variable, Categories, exp_coef, lci, uci, ` `, `Adjusted HR (95% CI)`, row
   )
 
 coef_all 
@@ -301,13 +315,13 @@ coef_all
 
 ## Combine count tables  
 ```{r analysis_02 combine count}
-table <- rbind(hc_table, stop_table, mss_table) %>%
+table <- rbind(hc_table, syn_table, nonsyn_table, stop_table, mss_table) %>%
   as_tibble() %>%
   mutate(
-    row = c(2:6, 8:9, 11)
+    row = c(2:6, 8:9, 11:12, 14:15, 17)
   ) %>%
   add_row(
-    row = c(1, 7, 10)
+    row = c(1, 7, 10, 13, 16)
   ) %>%
   arrange(row)
 table
@@ -320,12 +334,12 @@ data <- coef_all %>%
   mutate(
     total = as.character(total), 
     total = case_when(
-      row == 1 | row == 7 | row == 10 ~ "",
+      row == 1 | row == 7 | row == 10 | row == 13 | row == 16 ~ "",
       TRUE ~ total
     ),
     died = as.character(died),
     died = case_when(
-      row == 1 | row == 7 | row == 10 ~ "",
+      row == 1 | row == 7 | row == 10 | row == 13 | row == 16 ~ "",
       TRUE ~ died
     ) 
   ) %>%
@@ -334,43 +348,29 @@ data <- coef_all %>%
     Events = died
   ) %>%
   dplyr::select(
-    Variable, Categories, Total, Events, `Unadjusted`, `HR (95% CI)`, `Mutually adjusted`, `Adjusted HR (95% CI)`, exp_coef_unadj, lci_unadj, uci_unadj, exp_coef_adj, lci_adj, uci_adj 
+    Variable, Categories, Total, Events, ` `, `Adjusted HR (95% CI)`, exp_coef, lci, uci 
   )
 data
 ```
 
 # Figure 4  
-```{r analysis_02 figure4, fig.height=4.5, fig.width=15}
+```{r analysis_02 figure4, fig.height=6, fig.width=10}
 fig4 <- forestploter::forest(
-  data[, c(1:8)],
-  est = list(
-    data$exp_coef_unadj,
-    data$exp_coef_adj
-    ),
-  lower = list(
-    data$lci_unadj,
-    data$lci_adj
-    ),
-  upper = list(
-    data$uci_unadj,
-    data$uci_adj
-    ),
+  data[, c(1:6)],
+  est = data$exp_coef,
+  lower = data$lci, 
+  upper = data$uci, 
   sizes = 0.6,
-  ci_column = c(5, 7),
-  ref_line = c(1, 1),
+  ci_column = 5, 
+  ref_line = 1,
   xlog = TRUE,
-  xlim = list(
-    c(0.8, 3), 
-    c(0.8, 3)
-    ),
-  ticks_at = list(
-    c(0.8, 1, 1.5, 2.0, 2.5, 3),
-    c(0.8, 1, 1.5, 2.0, 2.5, 3)
-    )
+  xlim = c(0.8, 2), 
+  ticks_at = c(0.8, 1, 1.5, 2.0)
   )
+
 fig4  
 
-ggsave("ukb_heteroplasmy_outcomes_fig4.tiff", plot = fig4, height=4.5, width=13)
+ggsave("ukb_heteroplasmy_outcomes_fig4.tiff", plot = fig4, height=6, width=10)
 ```
 
 

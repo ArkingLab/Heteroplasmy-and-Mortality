@@ -188,6 +188,9 @@ cod_table <- table(ukb_os$cod, useNA = "ifany") %>%
       `Cause of death` == "external" ~ "External causes"
     ),
     Events = ifelse(`Cause of death` == "All-cause mortality", table(ukb_os$death)[2], Events)
+  ) %>%
+  mutate(
+    row = c(1:13)
   )
 cod_table
 ```
@@ -199,8 +202,9 @@ os_obj <- with(ukb_os, Surv(time = time_os, event = death))
 os_all <- os_obj ~ mito_score_sum_lc + strata(center) + rcs(age, df= 4) + sex + smk + alc + bmi + wbc + hap 
 all <- survival::coxph(os_all, data = ukb_os)
 summary(all)
+summary(all)$coef
 
-coef_all <- summary(all)$coef[1, 1:3]
+coef_all <- summary(all)$coef[1, ]
 coef_all
 ```
 
@@ -211,7 +215,7 @@ os_infection <- cs_infection_obj ~ mito_score_sum_lc + strata(center) + rcs(age,
 infection <- survival::coxph(os_infection, data = ukb_os)
 summary(infection)
 
-coef_infection <- summary(infection)$coef[1, 1:3]
+coef_infection <- summary(infection)$coef[1, ]
 coef_infection
 ```
 
@@ -222,7 +226,7 @@ os_neoplasm <- cs_neoplasm_obj ~ mito_score_sum_lc + strata(center) + rcs(age, d
 neoplasm <- survival::coxph(os_neoplasm, data = ukb_os)
 summary(neoplasm)
 
-coef_neoplasm <- summary(neoplasm)$coef[1, 1:3]
+coef_neoplasm <- summary(neoplasm)$coef[1, ]
 coef_neoplasm
 ```
 
@@ -233,7 +237,7 @@ os_blood <- cs_blood_obj ~ mito_score_sum_lc + strata(center) + rcs(age, df= 4) 
 blood <- survival::coxph(os_blood, data = ukb_os)
 summary(blood)
 
-coef_blood <- summary(blood)$coef[1, 1:3]
+coef_blood <- summary(blood)$coef[1, ]
 coef_blood
 ```
 
@@ -244,7 +248,7 @@ os_endocrine <- cs_endocrine_obj ~ mito_score_sum_lc + strata(center) + rcs(age,
 endocrine <- survival::coxph(os_endocrine, data = ukb_os)
 summary(endocrine)
 
-coef_endocrine <- summary(endocrine)$coef[1, 1:3]
+coef_endocrine <- summary(endocrine)$coef[1, ]
 coef_endocrine
 ```
 
@@ -255,7 +259,7 @@ os_mental <- cs_mental_obj ~ mito_score_sum_lc + strata(center) + rcs(age, df= 4
 mental <- survival::coxph(os_mental, data = ukb_os)
 summary(mental)
 
-coef_mental <- summary(mental)$coef[1, 1:3]
+coef_mental <- summary(mental)$coef[1, ]
 coef_mental
 ```
 
@@ -266,7 +270,7 @@ os_neuro <- cs_neuro_obj ~ mito_score_sum_lc + strata(center) + rcs(age, df= 4) 
 neuro <- survival::coxph(os_neuro, data = ukb_os)
 summary(neuro)
 
-coef_neuro <- summary(neuro)$coef[1, 1:3]
+coef_neuro <- summary(neuro)$coef[1, ]
 coef_neuro
 ```
 
@@ -277,7 +281,7 @@ os_cardio <- cs_cardio_obj ~ mito_score_sum_lc + strata(center) + rcs(age, df= 4
 cardio <- survival::coxph(os_cardio, data = ukb_os)
 summary(cardio)
 
-coef_cardio <- summary(cardio)$coef[1, 1:3]
+coef_cardio <- summary(cardio)$coef[1, ]
 coef_cardio
 ```
 
@@ -288,7 +292,7 @@ os_pulmo <- cs_pulmo_obj ~ mito_score_sum_lc + strata(center) + rcs(age, df= 4) 
 pulmo <- survival::coxph(os_pulmo, data = ukb_os)
 summary(pulmo)
 
-coef_pulmo <- summary(pulmo)$coef[1, 1:3]
+coef_pulmo <- summary(pulmo)$coef[1, ]
 coef_pulmo
 ```
 
@@ -299,7 +303,7 @@ os_gi <- cs_gi_obj ~ mito_score_sum_lc + strata(center) + rcs(age, df= 4) + sex 
 gi <- survival::coxph(os_gi, data = ukb_os)
 summary(gi)
 
-coef_gi <- summary(gi)$coef[1, 1:3]
+coef_gi <- summary(gi)$coef[1, ]
 coef_gi
 ```
 
@@ -310,7 +314,7 @@ os_gu <- cs_gu_obj ~ mito_score_sum_lc + strata(center) + rcs(age, df= 4) + sex 
 gu <- survival::coxph(os_gu, data = ukb_os)
 summary(gu)
 
-coef_gu <- summary(gu)$coef[1, 1:3]
+coef_gu <- summary(gu)$coef[1, ]
 coef_gu
 ```
 
@@ -321,7 +325,7 @@ os_covid <- cs_covid_obj ~ mito_score_sum_lc + strata(center) + rcs(age, df= 4) 
 covid <- survival::coxph(os_covid, data = ukb_os)
 summary(covid)
 
-coef_covid <- summary(covid)$coef[1, 1:3]
+coef_covid <- summary(covid)$coef[1, ]
 coef_covid
 ```
 
@@ -332,32 +336,64 @@ os_external <- cs_external_obj ~ mito_score_sum_lc + strata(center) + rcs(age, d
 external <- survival::coxph(os_external, data = ukb_os)
 summary(external)
 
-coef_external <- summary(external)$coef[1, 1:3]
+coef_external <- summary(external)$coef[1, ]
 coef_external
 ```
 
 ### Combine results   
 ```{r analysis_03 cod combine results}
+# coefficients 
 cod_coef <- rbind(
   coef_all, coef_infection, coef_neoplasm, coef_blood, coef_endocrine, coef_mental, coef_neuro, coef_cardio, coef_pulmo, coef_gi, coef_gu, coef_covid, coef_external
   ) %>%
-  as_tibble() 
+  as_tibble() %>%
+  rename(
+    p = `Pr(>|z|)`
+  ) 
+cod_coef
+
+# calculate FDR 
+cod_coef %<>%
+  mutate(
+    fdr = p.adjust(p, "BH"),
+    fdr = ifelse(fdr < 0.05, format(fdr, format = "e", digits = 3), round(fdr, 2)),
+    # fdr = round(p.adjust(p, "BH"), 2),
+    fdr = as.character(fdr)
+  ) %>%
+  mutate(
+    row = c(1:13)
+  )
 cod_coef
 ```
 
 ### Merge table with results  
 ```{r analysis_03 cod merge table results}
-data <- bind_cols(
-  cod_table, cod_coef
-  ) %>%
+data <- cod_table %>%
+  left_join(cod_coef, by = "row") %>%
   mutate(
+    # add estimates  
     lci = exp(coef - 1.96*`se(coef)`),
     uci = exp(coef + 1.96*`se(coef)`),
     `HR (95% CI)` = sprintf("%.2f (%.2f to %.2f)", `exp(coef)`, lci, uci),
-    ` ` = paste(rep(" ", 25), collapse= " ") 
+    ` ` = paste(rep(" ", 25), collapse= " "), 
+    # reformat p-values 
+    pp = ifelse(p < 0.05, format(p, format = "e", digits = 3), round(p, 2)),
+    pp = as.character(pp),
+    pp = case_when(
+      pp == "1.30e-12" ~ "1.30x10\u207b\u00b9\u00b2",
+      pp == "3.66e-04" ~ "3.66x10\u207b\u2074",
+      pp == "2.41e-02" ~ "2.41x10\u207b\u00b2",
+      pp == "3.28e-11" ~ "3.28x10\u207b\u00b9\u00b9", 
+      pp == "0.2" ~ "0.20",
+      pp == "0.3" ~ "0.30",
+      TRUE ~ pp
+    )
+  ) %>%
+  rename(
+    `P value` = pp
   ) %>%
   dplyr::select(
-    `Cause of death`, Events, ` `, `HR (95% CI)`, everything()
+    `Cause of death`, Events, ` `, `HR (95% CI)`, `P value`, everything()
   ) %>%
   filter(Events >= 100) %>%
   arrange(-coef) %>%
@@ -365,17 +401,17 @@ data <- bind_cols(
     order = row_number(),
     order = ifelse(
       `Cause of death` == "All-cause mortality", 0, order
-    )
+    ),
+    Events = as.character(Events)
   ) %>%
   arrange(order)
-
 data
 ```
 
 ### Figure 6a  
-```{r analysis_03 figure6a, fig.height=5, fig.width=9}
+```{r analysis_03 figure6a, fig.height=4.5, fig.width=9}
 fig6a <- forestploter::forest(
-  data[, c(1:4)],
+  data[, c(1:5)],
   est = data$`exp(coef)`,
   lower = data$lci,
   upper = data$uci,
@@ -420,10 +456,11 @@ cod_cancer_table <-
       `Cancer type` == "cod_cancer_uns" ~ "Ill-defined, secondary and unspecified sites", 
       `Cancer type` == "cod_cancer_lymphoma" ~ "  Lymphoma", 
       `Cancer type` == "cod_cancer_leukemia" ~ "  Leukemia"
-    )
+    ),
+    row = c(1:17)
   ) %>%
   rename(Events = `1`) %>%
-  select(`Cancer type`, Events)
+  select(`Cancer type`, Events, row)
 cod_cancer_table
 ```
 
@@ -434,7 +471,7 @@ os_cancer <- cs_cancer_obj ~ mito_score_sum_lc + strata(center) + rcs(age, df= 4
 cancer <- survival::coxph(os_cancer, data = ukb_os)
 summary(cancer)
 
-coef_cancer <- summary(cancer)$coef[1, 1:3]
+coef_cancer <- summary(cancer)$coef[1, ]
 coef_cancer
 ```
 
@@ -445,7 +482,7 @@ os_cancer_head_neck <- cs_cancer_obj ~ mito_score_sum_lc + strata(center) + rcs(
 cancer_head_neck <- survival::coxph(os_cancer_head_neck, data = ukb_os)
 summary(cancer_head_neck)
 
-coef_cancer_head_neck <- summary(cancer_head_neck)$coef[1, 1:3]
+coef_cancer_head_neck <- summary(cancer_head_neck)$coef[1, ]
 coef_cancer_head_neck
 ```
 
@@ -456,7 +493,7 @@ os_cancer_gi <- cs_cancer_gi_obj ~ mito_score_sum_lc + strata(center) + rcs(age,
 cancer_gi <- survival::coxph(os_cancer_gi, data = ukb_os)
 summary(cancer_gi)
 
-coef_cancer_gi <- summary(cancer_gi)$coef[1, 1:3]
+coef_cancer_gi <- summary(cancer_gi)$coef[1, ]
 coef_cancer_gi
 ```
 
@@ -467,7 +504,7 @@ os_cancer_resp <- cs_cancer_resp_obj ~ mito_score_sum_lc + strata(center) + rcs(
 cancer_resp <- survival::coxph(os_cancer_resp, data = ukb_os)
 summary(cancer_resp)
 
-coef_cancer_resp <- summary(cancer_resp)$coef[1, 1:3]
+coef_cancer_resp <- summary(cancer_resp)$coef[1, ]
 coef_cancer_resp
 ```
 
@@ -478,7 +515,7 @@ os_cancer_bone <- cs_cancer_bone_obj ~ mito_score_sum_lc + strata(center) + rcs(
 cancer_bone <- survival::coxph(os_cancer_bone, data = ukb_os)
 summary(cancer_bone)
 
-coef_cancer_bone <- summary(cancer_bone)$coef[1, 1:3]
+coef_cancer_bone <- summary(cancer_bone)$coef[1, ]
 coef_cancer_bone
 ```
 
@@ -489,7 +526,7 @@ os_cancer_skin <- cs_cancer_skin_obj ~ mito_score_sum_lc + strata(center) + rcs(
 cancer_skin <- survival::coxph(os_cancer_skin, data = ukb_os)
 summary(cancer_skin)
 
-coef_cancer_skin <- summary(cancer_skin)$coef[1, 1:3]
+coef_cancer_skin <- summary(cancer_skin)$coef[1, ]
 coef_cancer_skin
 ```
 
@@ -500,7 +537,7 @@ os_cancer_soft_tissue <- cs_cancer_soft_tissue_obj ~ mito_score_sum_lc + strata(
 cancer_soft_tissue <- survival::coxph(os_cancer_soft_tissue, data = ukb_os)
 summary(cancer_soft_tissue)
 
-coef_cancer_soft_tissue <- summary(cancer_soft_tissue)$coef[1, 1:3]
+coef_cancer_soft_tissue <- summary(cancer_soft_tissue)$coef[1, ]
 coef_cancer_soft_tissue
 ```
 
@@ -511,7 +548,7 @@ os_cancer_breast <- cs_cancer_breast_obj ~ mito_score_sum_lc + strata(center) + 
 cancer_breast <- survival::coxph(os_cancer_breast, data = ukb_os, subset = sex == "women")
 summary(cancer_breast)
 
-coef_cancer_breast <- summary(cancer_breast)$coef[1, 1:3]
+coef_cancer_breast <- summary(cancer_breast)$coef[1, ]
 coef_cancer_breast
 ```
 
@@ -522,7 +559,7 @@ os_cancer_female <- cs_cancer_female_obj ~ mito_score_sum_lc + strata(center) + 
 cancer_female <- survival::coxph(os_cancer_female, data = ukb_os, subset = sex == "women")
 summary(cancer_female)
 
-coef_cancer_female <- summary(cancer_female)$coef[1, 1:3]
+coef_cancer_female <- summary(cancer_female)$coef[1, ]
 coef_cancer_female
 ```
 
@@ -533,7 +570,7 @@ os_cancer_male <- cs_cancer_male_obj ~ mito_score_sum_lc + strata(center) + rcs(
 cancer_male <- survival::coxph(os_cancer_male, data = ukb_os, subset = sex == "men")
 summary(cancer_male)
 
-coef_cancer_male <- summary(cancer_male)$coef[1, 1:3]
+coef_cancer_male <- summary(cancer_male)$coef[1, ]
 coef_cancer_male
 ```
 
@@ -544,7 +581,7 @@ os_cancer_urinary <- cs_cancer_urinary_obj ~ mito_score_sum_lc + strata(center) 
 cancer_urinary <- survival::coxph(os_cancer_urinary, data = ukb_os)
 summary(cancer_urinary)
 
-coef_cancer_urinary <- summary(cancer_urinary)$coef[1, 1:3]
+coef_cancer_urinary <- summary(cancer_urinary)$coef[1, ]
 coef_cancer_urinary
 ```
 
@@ -555,7 +592,7 @@ os_cancer_cns <- cs_cancer_cns_obj ~ mito_score_sum_lc + strata(center) + rcs(ag
 cancer_cns <- survival::coxph(os_cancer_cns, data = ukb_os)
 summary(cancer_cns)
 
-coef_cancer_cns <- summary(cancer_cns)$coef[1, 1:3]
+coef_cancer_cns <- summary(cancer_cns)$coef[1, ]
 coef_cancer_cns
 ```
 
@@ -566,7 +603,7 @@ os_cancer_endo <- cs_cancer_endo_obj ~ mito_score_sum_lc + strata(center) + rcs(
 cancer_endo <- survival::coxph(os_cancer_endo, data = ukb_os)
 summary(cancer_endo)
 
-coef_cancer_endo <- summary(cancer_endo)$coef[1, 1:3]
+coef_cancer_endo <- summary(cancer_endo)$coef[1, ]
 coef_cancer_endo
 ```
 
@@ -577,7 +614,7 @@ os_cancer_uns <- cs_cancer_uns_obj ~ mito_score_sum_lc + strata(center) + rcs(ag
 cancer_uns <- survival::coxph(os_cancer_uns, data = ukb_os)
 summary(cancer_uns)
 
-coef_cancer_uns <- summary(cancer_uns)$coef[1, 1:3]
+coef_cancer_uns <- summary(cancer_uns)$coef[1, ]
 coef_cancer_uns
 ```
 
@@ -588,7 +625,7 @@ os_cancer_blood <- cs_cancer_blood_obj ~ mito_score_sum_lc + strata(center) + rc
 cancer_blood <- survival::coxph(os_cancer_blood, data = ukb_os)
 summary(cancer_blood)
 
-coef_cancer_blood <- summary(cancer_blood)$coef[1, 1:3]
+coef_cancer_blood <- summary(cancer_blood)$coef[1, ]
 coef_cancer_blood
 ```
 
@@ -599,7 +636,7 @@ os_cancer_lymphoma <- cs_cancer_lymphoma_obj ~ mito_score_sum_lc + strata(center
 cancer_lymphoma <- survival::coxph(os_cancer_lymphoma, data = ukb_os)
 summary(cancer_lymphoma)
 
-coef_cancer_lymphoma <- summary(cancer_lymphoma)$coef[1, 1:3]
+coef_cancer_lymphoma <- summary(cancer_lymphoma)$coef[1, ]
 coef_cancer_lymphoma
 ```
 
@@ -610,57 +647,95 @@ os_cancer_leukemia <- cs_cancer_leukemia_obj ~ mito_score_sum_lc + strata(center
 cancer_leukemia <- survival::coxph(os_cancer_leukemia, data = ukb_os)
 summary(cancer_leukemia)
 
-coef_cancer_leukemia <- summary(cancer_leukemia)$coef[1, 1:3]
+coef_cancer_leukemia <- summary(cancer_leukemia)$coef[1, ]
 coef_cancer_leukemia
 ```
 
 ### Combine results   
 ```{r analysis_03 cod_cancer combine results}
+# coefficients 
 cod_cancer_coef <- rbind(
-  coef_cancer, coef_cancer_blood, coef_cancer_head_neck, coef_cancer_gi, coef_cancer_resp, coef_cancer_bone, coef_cancer_skin, coef_cancer_soft_tissue, coef_cancer_breast, 
-  coef_cancer_female, coef_cancer_male, coef_cancer_urinary, coef_cancer_cns, coef_cancer_endo, coef_cancer_uns, coef_cancer_lymphoma, coef_cancer_leukemia
+  coef_cancer, coef_cancer_blood, coef_cancer_head_neck, coef_cancer_gi, coef_cancer_resp, coef_cancer_bone, coef_cancer_skin, 
+  coef_cancer_soft_tissue, coef_cancer_breast, coef_cancer_female, coef_cancer_male, coef_cancer_urinary, coef_cancer_cns, coef_cancer_endo, 
+  coef_cancer_uns, coef_cancer_lymphoma, coef_cancer_leukemia
   ) %>%
-  as_tibble() 
+  as_tibble() %>%
+  rename(
+    p = `Pr(>|z|)`
+  ) 
+cod_cancer_coef
+
+# calculate FDR 
+cod_cancer_coef %<>%
+  mutate(
+    fdr = p.adjust(p, "BH"),
+    fdr = ifelse(fdr < 0.05, format(fdr, format = "e", digits = 3), round(fdr, 2)),
+    # fdr = round(p.adjust(p, "BH"), 2),
+    fdr = as.character(fdr)
+  ) %>%
+  mutate(
+    row = c(1:17)
+  )
 cod_cancer_coef
 ```
 
 ### Merge table with results  
 ```{r analysis_03 cod_cancer merge table results}
-data_cancer <- bind_cols(
-  cod_cancer_table, cod_cancer_coef
-  ) %>%
+data_cancer <- cod_cancer_table %>%
+  left_join(cod_cancer_coef, by = "row") %>%
   mutate(
+    # add estimates  
     lci = exp(coef - 1.96*`se(coef)`),
     uci = exp(coef + 1.96*`se(coef)`),
     `HR (95% CI)` = sprintf("%.2f (%.2f to %.2f)", `exp(coef)`, lci, uci),
-    ` ` = paste(rep(" ", 25), collapse= " ") 
+    ` ` = paste(rep(" ", 25), collapse= " "), 
+    # reformat p-values 
+    pp = ifelse(p < 0.05, format(p, format = "e", digits = 3), round(p, 2)),
+    pp = as.character(pp),
+    pp = case_when(
+      pp == "1.85e-10" ~ "1.85x10\u207b\u00b9\u2070",
+      pp == "4.74e-25" ~ "4.74x10\u207b\u00b2\u2075",
+      pp == "1.85e-10" ~ "1.85x10\u207b\u00b9\u2070",
+      pp == "1.96e-05" ~ "1.96x10\u207b\u2075",
+      pp == "7.72e-04" ~ "7.72x10\u207b\u2074",
+      pp == "4.45e-36" ~ "4.45x10\u207b\u00b3\u2076",
+      pp == "7.73e-04" ~ "7.73x10\u207b\u2074",
+      pp == "2.40e-02" ~ "2.40x10\u207b\u00b2",
+      pp == "0.2" ~ "0.20",
+      pp == "0.3" ~ "0.30",
+      TRUE ~ pp
+    )
+  ) %>%
+  rename(
+    `P value` = pp
   ) %>%
   dplyr::select(
-    `Cancer type`, Events, ` `, `HR (95% CI)`, everything()
+    `Cancer type`, Events, ` `, `HR (95% CI)`, `P value`, everything()
   ) %>%
   filter(Events >= 100) %>%
   arrange(-coef) %>%
   mutate(
-    order = row_number()
-  ) %>%
-  mutate(
+    `Cancer type` = case_when(
+      `Cancer type` == "Lymphoma" ~ "  Lymphoma",
+      `Cancer type` == "Leukemia" ~ "  Leukemia",
+      TRUE ~ `Cancer type`),
+    order = row_number(),
     order = case_when(
       `Cancer type` == "Any cancer" ~ 0,
       `Cancer type` == "Hematologic" ~ 1,
       `Cancer type` == "  Leukemia" ~ 2,
       `Cancer type` == "  Lymphoma" ~ 3,
-      TRUE ~ as.numeric(order)
+      TRUE ~  as.numeric(order)
     )
   ) %>%
   arrange(order)
-
 data_cancer
 ```
 
 ### Figure 6b  
-```{r analysis_03 figure6b, fig.height=5, fig.width=9}
+```{r analysis_03 figure6b, fig.height=4.5, fig.width=9}
 fig6b <- forestploter::forest(
-  data_cancer[, c(1:4)],
+  data_cancer[, c(1:5)],
   est = data_cancer$`exp(coef)`,
   lower = data_cancer$lci,
   upper = data_cancer$uci,

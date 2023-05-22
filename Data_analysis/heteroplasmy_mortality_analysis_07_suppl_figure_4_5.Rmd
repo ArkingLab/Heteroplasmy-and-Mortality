@@ -1,0 +1,502 @@
+---
+title: "UKB - Heteroplasmy and mortality - data analysis"
+subtitle: "007 - Supplementary figures - supplementary figures 4 and 5"
+author: "Yun Soo Hong"
+date: '`r format(Sys.Date(), "%B %d, %Y")`'
+output: 
+  html_document:
+    toc: true
+    toc_float: 
+      collapsed: false
+      smooth_scroll: false
+    pandoc_args: [
+    "--number-sections",
+    "--number-offset=0"
+    ]
+fontsize: 11pt
+---
+
+# Set up  
+
+## Program description  
+* This program reads in the final data set to provide analysis for heteroplasmy count and generates supplementary figures 4 and 5.     
+  * Step 1: Read in data 
+  * Step 2: Heteroplasmy count, stop mutation, MLC score, and mortality   
+  
+## Versions of R and packages  
+```{r analysis_07 set up, include = FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Load libraries
+```{r analysis_07 load libraries, echo = TRUE, message = FALSE}
+library(tidyverse)
+library(magrittr)
+library(lubridate)
+library(data.table)
+library(rms)
+library(RColorBrewer)
+library(survival)
+library(gtsummary)
+library(survminer)
+```
+
+## Print out settings  
+```{r analysis_07 print settings}
+options(tibble.print_max = 100)
+options(pillar.sigfig = 5)
+```
+
+# Load data  
+```{r analysis_07 load data}
+ukb <- readRDS("../data_cleaning/ukb_heteroplasmy_mortality_v1.rds")
+
+ukb %<>%
+  mutate(
+    mutation_nonsyn_any = ifelse(is.na(mutation_nonsyn_any), 0, mutation_nonsyn_any)
+  )
+
+table(ukb$smk_na, useNA = "ifany")
+table(ukb$het_count, useNA = "ifany")
+table(ukb$het_count_cat, useNA = "ifany")
+
+ukb_miss <- ukb %>%
+  filter(!is.na(smk_na))
+
+knots <- attributes(rms::rcs(ukb_miss$age, df = 4))$parms
+knots
+```
+
+# Suvival analysis    
+## Settings for survival analysis  
+### Time to event  
+```{r analysis_07 time_os}
+table(ukb$death, useNA = "ifany") %>%
+  addmargins()
+table(ukb_miss$death, useNA = "ifany") %>%
+  addmargins() 
+
+ukb_miss %<>%
+  mutate(
+    time_os = as.numeric((death_end_fu - dov)/365.25)
+  )
+summary(ukb_miss$time_os)
+```
+
+### Survival object  
+```{r analysis_07 os_obj}
+os_obj <- with(ukb_miss, Surv(time = time_os, event = death))
+```
+
+# Extended figure 4: Heteroplasmy count + stop mutation  
+## Figure 4a table    
+```{r analysis_07 ext_fig4a_table}
+hc_table <- table(ukb_miss$het_count_cat, ukb_miss$death, useNA = "ifany") %>%
+  unclass() %>%
+  as.data.frame() %>%
+  rename(
+    alive = `0`,
+    died = `1`
+  ) %>%
+  mutate(total = alive + died) %>%
+  rownames_to_column("Categories") %>%
+  add_row() %>%
+  mutate(
+    row = c(2:6, 1)
+  ) %>%
+  arrange(row) %>%
+  mutate(
+    Categories = c("", "0", "1", "2", "3", "4+")
+  )
+hc_table
+
+stop_table <- table(ukb_miss$mutation_stop_any, ukb_miss$death, useNA = "ifany") %>%
+  unclass() %>%
+  as.data.frame() %>%
+  rename(
+    alive = `0`,
+    died = `1`
+  ) %>%
+  mutate(total = alive + died) %>%
+  rownames_to_column("Categories") %>%
+  add_row() %>%
+  mutate(
+    row = c(8, 9, 7)
+  ) %>%
+  arrange(row) 
+stop_table
+
+hc_stop_table <- rbind(hc_table, stop_table)
+hc_stop_table %<>%
+  mutate(
+    Categories = case_when(
+      row == 1 | row == 7 ~ "",
+      TRUE ~ as.character(Categories)
+    ),
+    alive = case_when(
+      row == 1 | row == 7 ~ "",
+      TRUE ~ as.character(alive)
+    ),
+    died = case_when(
+      row == 1 | row == 7 ~ "",
+      TRUE ~ as.character(died)
+    ),
+    total = case_when(
+      row == 1 | row == 7 ~ "",
+      TRUE ~ as.character(total)
+    )
+  )
+```
+
+## Figure 4b table  
+```{r analysis_07 ext_fig4b_table}
+mtscore_table <- table(ukb_miss$death, useNA = "ifany") %>%
+  as.data.frame() %>%
+  spread(Var1, Freq) %>%
+  rename(
+    alive = `0`,
+    died = `1`
+  ) %>%
+  mutate(
+    total = alive + died
+  ) %>%
+  rownames_to_column("Categories") %>%
+  add_row() %>%
+  mutate(
+    row = c(8, 7)
+  ) %>%
+  arrange(row) 
+mtscore_table
+
+hc_mtscore_table <- rbind(hc_table, mtscore_table)
+hc_mtscore_table %<>%
+  mutate(
+    Categories = case_when(
+      row == 1 | row == 7 ~ "",
+      row == 8 ~ "Continuous", 
+      TRUE ~ as.character(Categories)
+    ),
+    alive = case_when(
+      row == 1 | row == 7 ~ "",
+      TRUE ~ as.character(alive)
+    ),
+    died = case_when(
+      row == 1 | row == 7 ~ "",
+      TRUE ~ as.character(died)
+    ),
+    total = case_when(
+      row == 1 | row == 7 ~ "",
+      TRUE ~ as.character(total)
+    )
+  )
+hc_mtscore_table
+```
+
+## Cox models  
+```{r analysis_07 ext_fig4_cox}
+# Figure 4a
+os_hc_stop <- os_obj ~ as.factor(het_count_cat) + mutation_stop_any + strata(center) + rcs(age, df= 4) + sex + smk 
+hc_stop <- survival::coxph(os_hc_stop, data = ukb_miss)
+summary(hc_stop)
+
+coef_hc_stop <- summary(hc_stop)$coef[1:5, 1:3]
+coef_hc_stop
+
+coef_hc_stop %<>%
+  as_tibble() %>%
+  mutate(
+    row = c(3:6, 9)
+  ) %>%
+  add_row(
+    row = c(1:2, 7:8)
+  ) %>%
+  arrange(row)
+
+# Figure 4b
+os_hc_mtscore <- os_obj ~ as.factor(het_count_cat) + mito_lc_score + strata(center) + rcs(age, df= 4) + sex + smk
+hc_mtscore <- survival::coxph(os_hc_mtscore, data = ukb_miss)
+summary(hc_mtscore)
+
+coef_hc_mtscore <- summary(hc_mtscore)$coef[1:5, 1:3]
+coef_hc_mtscore
+
+coef_hc_mtscore %<>%
+  as_tibble() %>%
+  mutate(
+    row = c(3:6, 8)
+  ) %>%
+  add_row(
+    row = c(1:2, 7)
+  ) %>%
+  arrange(row)
+```
+
+## Combine result outputs  
+### Heteroplasmy count + stop mutation   
+```{r analysis_07 combine outputs hc_stop}
+hc_stop_data <- hc_stop_table %>%
+  left_join(coef_hc_stop, by = "row") %>%
+  mutate(
+    Variable = 
+      c("Heteroplasmy count", "", "", "", "", "", "Nonsense mutation", "", ""),
+    lci = 
+      ifelse(
+        row == 1 | row == 2 | row == 7 | row == 8, 1, exp(coef - 1.96*(`se(coef)`))
+      ), 
+    uci = 
+      ifelse(
+        row == 1 | row == 2 | row == 7 | row == 8, 1, exp(coef + 1.96*(`se(coef)`))
+      ), 
+    ` ` = paste(rep(" ", 25), collapse = " "),
+    `HR (95% CI)` = sprintf("%.2f (%.2f to %.2f)", `exp(coef)`, lci, uci),
+    `HR (95% CI)` = case_when(
+      row == 1 | row == 7 ~ "",
+      row == 2 | row == 8 ~ "Reference",
+      TRUE ~ `HR (95% CI)`
+    )
+  ) %>%
+  rename(
+    Total = total,
+    Events = died
+  ) %>%
+  dplyr::select(Variable, Categories, Total, Events, ` `, `HR (95% CI)`, everything())
+
+hc_stop_data
+```
+
+### Heteroplasmy count + Mitoscore local  
+```{r analysis_07 combine outputs hc_mtscore}
+hc_mtscore_data <- hc_mtscore_table %>%
+  left_join(coef_hc_mtscore, by = "row") %>%
+  mutate(
+    Variable = 
+      c("Heteroplasmy count", "", "", "", "", "", "MLC score", ""),
+    lci = 
+      ifelse(
+        row == 1 | row == 2 | row == 7, 1, exp(coef - 1.96*(`se(coef)`))
+      ), 
+    uci = 
+      ifelse(
+        row == 1 | row == 2 | row == 7, 1, exp(coef + 1.96*(`se(coef)`))
+      ), 
+    ` ` = paste(rep(" ", 25), collapse = " "),
+    `HR (95% CI)` = sprintf("%.2f (%.2f to %.2f)", `exp(coef)`, lci, uci),
+    `HR (95% CI)` = case_when(
+      row == 1 | row == 7 ~ "",
+      row == 2 ~ "Reference",
+      TRUE ~ `HR (95% CI)`
+    )
+  ) %>%
+  rename(
+    Total = total,
+    Events = died
+  ) %>%
+  dplyr::select(Variable, Categories, Total, Events, ` `, `HR (95% CI)`, everything())
+
+hc_mtscore_data
+```
+
+## Plot 
+### Supplementary Figure 4a  
+```{r analysis_07 sfig4a}
+sfig4a <- forestploter::forest(
+  hc_stop_data[, c(1:6)],
+  est = hc_stop_data$`exp(coef)`,
+  lower = hc_stop_data$lci,
+  upper = hc_stop_data$uci,
+  sizes = 0.4,
+  ci_column = 5,
+  ref_line = 1,
+  xlog = TRUE,
+  xlim = c(0.9, 3), 
+  ticks_at = c(1, 1.5, 2.0, 2.5)
+  )
+sfig4a
+```
+
+### Supplementary Figure 4b  
+```{r analysis_07 sfig4b}
+sfig4b <- forestploter::forest(
+  hc_mtscore_data[, c(1:6)],
+  est = hc_mtscore_data$`exp(coef)`,
+  lower = hc_mtscore_data$lci,
+  upper = hc_mtscore_data$uci,
+  sizes = 0.4,
+  ci_column = 5,
+  ref_line = 1,
+  xlog = TRUE,
+  xlim = c(0.9, 3), 
+  ticks_at = c(1, 1.5, 2.0, 2.5)
+  )
+sfig4b
+```
+
+### Supplementary Figure 4  
+```{r analysis_07 sfig3, fig.height=7, fig.width=10}
+sfig4 <- ggpubr::ggarrange(
+  sfig4a, sfig4b,
+  ncol = 1, nrow = 2,
+  labels = c("a", "b"),
+  align = "v"
+)
+sfig4
+
+ggsave("ukb_heteroplasmy_outcomes_extended_fig4.tiff", plot = sfig4, height=7, width=10) 
+```
+
+# Extended figure 5: Heteroplasmy count + nonsynonymous + MLC   
+## Figure 5 table    
+```{r analysis_07 ext_fig5_table}
+hc_table <- table(ukb_miss$het_count_cat, ukb_miss$death, useNA = "ifany") %>%
+  unclass() %>%
+  as.data.frame() %>%
+  rename(
+    alive = `0`,
+    died = `1`
+  ) %>%
+  mutate(total = alive + died) %>%
+  rownames_to_column("Categories") %>%
+  add_row() %>%
+  mutate(
+    row = c(2:6, 1)
+  ) %>%
+  arrange(row) %>%
+  mutate(
+    Categories = c("", "0", "1", "2", "3", "4+")
+  )
+hc_table
+
+nonsyn_table <- table(ukb_miss$mutation_nonsyn_any, ukb_miss$death, useNA = "ifany") %>%
+  unclass() %>%
+  as.data.frame() %>%
+  rename(
+    alive = `0`,
+    died = `1`
+  ) %>%
+  mutate(total = alive + died) %>%
+  rownames_to_column("Categories") %>%
+  add_row() %>%
+  mutate(
+    row = c(8, 9, 7)
+  ) %>%
+  arrange(row) 
+nonsyn_table
+
+mtscore_table <- table(ukb_miss$death, useNA = "ifany") %>%
+  as.data.frame() %>%
+  spread(Var1, Freq) %>%
+  rename(
+    alive = `0`,
+    died = `1`
+  ) %>%
+  mutate(
+    total = alive + died
+  ) %>%
+  rownames_to_column("Categories") %>%
+  add_row() %>%
+  mutate(
+    row = c(11, 10)
+  ) %>%
+  arrange(row) 
+mtscore_table
+
+hc_nonsyn_mss_table <- rbind(hc_table, nonsyn_table, mtscore_table)
+hc_nonsyn_mss_table %<>%
+  mutate(
+    Categories = case_when(
+      row == 1 | row == 7 | row == 10 ~ "",
+      TRUE ~ as.character(Categories)
+    ),
+    Categories = case_when(
+      row == 8 ~ "No", 
+      row == 9 ~ "Yes",
+      row == 11 ~ "Continuous",
+      TRUE ~ as.character(Categories)
+    ),
+    alive = case_when(
+      row == 1 | row == 7 | row == 10 ~ "",
+      TRUE ~ as.character(alive)
+    ),
+    died = case_when(
+      row == 1 | row == 7 | row == 10 ~ "",
+      TRUE ~ as.character(died)
+    ),
+    total = case_when(
+      row == 1 | row == 7 | row == 10 ~ "",
+      TRUE ~ as.character(total)
+    )
+  )
+hc_nonsyn_mss_table
+```
+
+## Cox models  
+```{r analysis_07 ext_fig5_cox}
+os_hc_nonsyn_mtscore <- os_obj ~ as.factor(het_count_cat) + mutation_nonsyn_any + mito_lc_score + strata(center) + rcs(age, df= 4) + sex + smk
+hc_nonsyn_mtscore <- survival::coxph(os_hc_nonsyn_mtscore, data = ukb_miss)
+summary(hc_nonsyn_mtscore)
+
+coef_hc_nonsyn_mtscore <- summary(hc_nonsyn_mtscore)$coef[1:6, 1:3]
+coef_hc_nonsyn_mtscore
+
+coef_hc_nonsyn_mtscore %<>%
+  as_tibble() %>%
+  mutate(
+    row = c(3:6, 9, 11)
+  ) %>%
+  add_row(
+    row = c(1:2, 7:8, 10)
+  ) %>%
+  arrange(row)
+coef_hc_nonsyn_mtscore
+```
+
+## Combine result outputs  
+```{r analysis_07 combine outputs hc_nonsyn_mss_data}
+hc_nonsyn_mss_data <- hc_nonsyn_mss_table %>%
+  left_join(coef_hc_nonsyn_mtscore, by = "row") %>%
+  mutate(
+    Variable = 
+      c("Heteroplasmy count", "", "", "", "", "", "Nonsynonymous", "", "", "MLC score", ""),
+    lci = 
+      ifelse(
+        row == 1 | row == 2 | row == 7 | row == 8 | row == 10, 1, exp(coef - 1.96*(`se(coef)`))
+      ), 
+    uci = 
+      ifelse(
+        row == 1 | row == 2 | row == 7 | row == 8 | row == 10, 1, exp(coef + 1.96*(`se(coef)`))
+      ), 
+    ` ` = paste(rep(" ", 25), collapse = " "),
+    `HR (95% CI)` = sprintf("%.2f (%.2f to %.2f)", `exp(coef)`, lci, uci),
+    `HR (95% CI)` = case_when(
+      row == 1 | row == 7 | row == 8 | row == 10 ~ "",
+      row == 2 | row == 8 ~ "Reference",
+      TRUE ~ `HR (95% CI)`
+    )
+  ) %>%
+  rename(
+    Total = total,
+    Events = died
+  ) %>%
+  dplyr::select(Variable, Categories, Total, Events, ` `, `HR (95% CI)`, everything())
+
+hc_nonsyn_mss_data
+```
+
+## Supplementary Figure 5  
+```{r analysis_07 sfig5, fig.height=4, fig.width=8}
+sfig5 <- forestploter::forest(
+  hc_nonsyn_mss_data[, c(1:6)],
+  est = hc_nonsyn_mss_data$`exp(coef)`,
+  lower = hc_nonsyn_mss_data$lci,
+  upper = hc_nonsyn_mss_data$uci,
+  sizes = 0.4,
+  ci_column = 5,
+  ref_line = 1,
+  xlog = TRUE,
+  xlim = c(0.8, 2), 
+  ticks_at = c(0.8, 1, 1.5, 2.0)
+  )
+sfig5
+
+ggsave("ukb_heteroplasmy_outcomes_extended_fig5.tiff", plot = sfig5, height=4, width=8) 
+```

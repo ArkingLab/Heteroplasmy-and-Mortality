@@ -1,0 +1,654 @@
+---
+title: "UKB - Heteroplasmy and mortality - data analysis"
+subtitle: "006 - Supplementary figures - supplementary figures 2 and 3"
+author: "Yun Soo Hong"
+date: '`r format(Sys.Date(), "%B %d, %Y")`'
+output: 
+  html_document:
+    toc: true
+    toc_float: 
+      collapsed: false
+      smooth_scroll: false
+    pandoc_args: [
+    "--number-sections",
+    "--number-offset=0"
+    ]
+fontsize: 11pt
+---
+
+# Set up  
+
+## Program description  
+* This program reads in the raw data sets and plots supplementary figures (Extended Data Figures 2 and 3) for the manuscript.      
+* Data sets include:
+  * `cvg_200k.tab`: subsampled coverage  
+  * `allwgscnonly.txt`: nuclear genome and mitochondrial reads and copy number
+    * the mtDNA-CN in this data set is identical to the `WGS_CN.txt` data set so we do not need to load `WGS_CN.txt`   
+  * `mutect2.haplocheck_200k.tab`: contamination check  
+  * `mutect2.suspcious.tab`: low coverage  
+  * `mutect2.05.suspcious.tab1`: poor quality  
+  * `per_sample_count_with_all_filter_0805.txt`
+  * `mutect2.haplogroup1_200k.tab`: haplogroup    
+* Steps  
+  * Step 1: Read in data  
+  * Step 2: Sample QC and exclusion criteria  
+    * Exclusion 1:
+      * Contamination level >= 0.03  
+      * Low coverage
+        * mean CVG < 500 or minimum CVG < 100  
+      * Poor quality  
+        * mismatch HG: has variants that are common in other haplogroups  
+        * multiple NUMTs: has multiple numt variants from same numt  
+  * Step 3: Heteroplasmy count by haplogroup  
+  
+## Versions of R and packages  
+```{r analysis_06 set up, include = FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Load libraries
+```{r analysis_06 load libraries, echo = TRUE, message = FALSE}
+library(tidyverse)
+library(magrittr)
+library(lubridate)
+library(stringr)
+library(data.table)
+library(RColorBrewer)
+```
+
+## Print out settings  
+```{r analysis_06 print settings}
+options(tibble.print_max = 100)
+options(pillar.sigfig = 5)
+```
+
+# Load data  
+## Coverage  
+```{r analysis_06 load coverage}
+coverage <- data.table::fread("../../data/cvg_200k.tab") %>%
+  as.data.frame()
+
+coverage %<>%
+  mutate(
+    subject = gsub("_.*", "", Run)
+  )
+coverage %>%  # 199919 observations and 199919 individuals  
+  summarise(
+    n = n_distinct(subject)
+  ) 
+``` 
+
+## Reads  
+* Comments from Stephanie's .rmd:  
+  * Wen counted reads using `idxstat` (separate from MitoHPC) and more sample are included. 
+  * There are some samples that failed one and not the other, so those will be excluded.  
+* Coverage = read length x read count / genome size  
+  * Genome size: 3,031,865,587 bases in human genome  
+  * Sequencing is paired - end 75 <- not sure what this means?  
+  
+```{r analysis_06 load reads}
+reads <- data.table::fread("../../data/allwgscnonly.txt") %>%
+  as.data.frame()
+
+reads %<>%
+  mutate(
+    subject = gsub("_.*", "", Run)
+  )
+reads %>%  # 199945 observations and 199945 individuals  
+  summarise(
+    n = n_distinct(subject)
+  ) 
+
+# Full coverage  
+reads %<>%
+  mutate(
+    gcvg = (150 * mapped) / 3031865587,
+    mcvg = (150 * MT) / 16569
+  )
+```
+
+## Contamination check  
+```{r analysis_06 load haplocheck}
+haplocheck <- data.table::fread("../../data/mutect2.haplocheck_200k.tab") %>%
+  as.data.frame()
+
+haplocheck %<>%
+  mutate(
+    subject = gsub("_.*", "", Run)
+  )
+haplocheck %>%  # 199919 observations and 199919 individuals  
+  summarise(
+    n = n_distinct(subject)
+  ) 
+
+table(haplocheck$ContaminationLevel) # ND refers to contamination 0
+
+haplocheck %<>%
+  mutate(
+    level = as.numeric(ContaminationLevel),
+    level = ifelse(is.na(level), 0, level)
+  )
+summary(haplocheck$level)
+
+# Proportion of individuals with contamination 0 
+n <- nrow(haplocheck)
+
+haplocheck %>%
+  filter(level != 0) %>%
+  summarise(
+    count = n(),
+    prop = count/n * 100
+  )
+
+# Proportion of individuals with contamination >= 0.03
+haplocheck %>%
+  filter(level >= 0.03) %>%
+  summarise(
+    count = n(),
+    prop = count/n * 100
+  )
+
+haplocheck %<>%
+  mutate(
+    exc_contamination = ifelse(level >= 0.03, 1, 0)
+  )
+```
+
+## Low coverage  
+* 19 individuals have both mean_CVG < 500 and minimum CVG < 100  
+* We keep 1 row per participant 
+  * We disregard the reason as we will not make distinction between mean and minimum CVG when we apply the exclusion criteria  
+  
+```{r analysis_06 load low_coverage}
+low_coverage <- data.table::fread("../../data/mutect2.suspicious.tab") %>%
+  as.data.frame()
+
+low_coverage %<>%
+  mutate(
+    subject = gsub("_.*", "", V1)
+  )
+
+low_coverage %>%  # 1151 observations and 1132 individuals  
+  summarise(
+    nrow = n(),
+    n = n_distinct(subject)
+  ) 
+
+# Keep 1 observation per participant  
+low_coverage %<>%
+  group_by(subject) %>%
+  mutate(
+    count = row_number()
+  ) %>%
+  ungroup() %>%
+  filter(count == 1) %>%
+  mutate(
+    exc_low_coverage = 1
+  ) %>%
+  dplyr::select(subject, exc_low_coverage)
+```
+
+## Poor quality  
+* haplocheck fail: we define our cutoff as contamination >= 0.03, so ignore this filter  
+* low_CN <= 50: we use a different cutoff as CN <= 40, so ignore this filter  
+* mismatch HG: has variants that are common in other haplogroups  
+* multiple NUMTs: has multiple numt variants from same numt  
+* We keep 1 row per participant 
+  * We disregard the reason as we will not make distinction between mismatch_HG and multiple_NUMTs when we apply the exclusion criteria  
+  
+```{r analysis_06 load quality}
+quality <- data.table::fread("../../data/mutect2.05.suspicious.tab1", header = F) %>%
+  as.data.frame()
+
+quality %<>%
+  mutate(
+    subject = gsub("_.*", "", V1)
+  )
+
+quality %>%  # 25744 observations and 23017 individuals  
+  summarise(
+    nrow = n(),
+    n = n_distinct(subject)
+  ) 
+
+table(quality$V2)
+
+poor_quality <- quality %>%
+  filter(V2 == "mismatch_HG" | V2 == "multiple_NUMTs")
+
+poor_quality %>%  # 3284 observations and 1425 individuals  
+  summarise(
+    nrow = n(),
+    n = n_distinct(subject)
+  ) 
+
+# Keep 1 observation per participant  
+poor_quality %<>%
+  group_by(subject) %>%
+  mutate(
+    count = row_number()
+  ) %>%
+  ungroup() %>%
+  filter(count == 1) %>%
+  mutate(
+    exc_poor_quality = 1
+  ) %>%
+  dplyr::select(subject, exc_poor_quality)
+```
+
+## Heteroplasmy count data  
+* This section applies the same codes as the `heteroplasmy_outcomes_data_cleaning_005_mito.Rmd` as it incorporates the decision made on how to deal with missing values for `mito_lc_score`. When this variable is missing, it is set to 0 and the given variant is not counted as a heteroplasmic site, and therefore, does not contribute to `het_count`.  
+
+```{r analysis_06 load raw}
+raw <- fread("../../data/all_variants_het_download_allfilter_0805.txt") %>%
+  as.data.frame()
+
+raw %<>%
+  rename(subject = SAMPLE) %>%
+  mutate(subject = as.character(subject)) 
+
+raw %>%  # n = 85669 observations (61999 participants)
+  summarise(
+    nrow = n(),
+    n = n_distinct(subject)
+  )
+
+# There are 23 observations where `mito_lc_score` is missing  
+summary(raw$mito_lc_score)  
+raw %>%  # 23 observations (18 participants)
+  filter(is.na(mito_lc_score)) %>%
+  summarise(n = n_distinct(subject))
+
+raw %<>%  # indicator variable for those missing `mito_lc_score`
+  mutate(
+    miss_mtscore = ifelse(is.na(mito_lc_score), 1, 0)
+  ) %>%
+  group_by(subject) %>%
+  mutate(
+    miss_mtscore_max = max(miss_mtscore),  # individuals with any missing `mito_lc_score`
+    miss_mtscore_sum = sum(miss_mtscore)   # total number of missing per person  
+  ) %>%
+  ungroup()
+
+raw %>%
+  filter(miss_mtscore_max == 1) %>%
+  dplyr::select(subject, mito_lc_score, miss_mtscore, miss_mtscore_max, miss_mtscore_sum) %>%
+  arrange(subject)
+
+het <- raw %>%
+  dplyr::select(subject, mito_lc_score, miss_mtscore, miss_mtscore_max, miss_mtscore_sum) %>%
+  mutate(
+    mito_lc_score = ifelse(is.na(mito_lc_score), 0, mito_lc_score)
+  )
+summary(het$mito_lc_score)
+
+# Heteroplasmy count per person  
+het %<>%
+  group_by(subject) %>%
+  mutate(
+    het_count = n()
+  ) %>%
+  ungroup()
+table(het$het_count, useNA = "ifany")
+
+# Account for missing values of mito_lc_score and update heteroplasmy count 
+het %<>%
+  mutate(
+    het_count = het_count - miss_mtscore_sum
+  ) 
+table(het$het_count, useNA = "ifany")
+
+# Category of heteroplasmy count per person: 4 and above are collapsed as 4
+het %<>%
+  mutate(
+    het_count_cat = ifelse(het_count > 4, 4, het_count)
+  ) %>%
+  arrange(subject)
+table(het$het_count_cat, useNA = "ifany")
+table(het$het_count, het$het_count_cat, useNA = "ifany")
+
+# Select 1 row per person and since we do not need mito_lc_score information, we drop these variables  
+het %<>%
+  group_by(subject) %>%
+  mutate(
+    n = row_number()
+  ) %>%
+  ungroup() %>%
+  filter(n == 1) %>%
+  dplyr::select(subject, het_count, het_count_cat)
+
+het %>%  # n = 61999 observations (61999 participants)
+  summarise(
+    nrow = n(),
+    n = n_distinct(subject)
+  )
+```
+
+## Haplogroup data  
+* This section implements the same codes as the `heteroplasmy_outcomes_data_cleaning_005_mito.Rmd`.  
+
+```{r analysis_06 load haplogroup}
+haplogroup <- fread("../../data/mutect2.haplogroup1_200k.tab") %>%
+  as.data.frame()
+haplogroup %<>%
+  mutate(
+    subject = gsub("_.*", "", Run)
+  )
+
+haplogroup %>%  # n = 199919 observations (199919 participants)
+  summarise(
+    nrow = n(),
+    n = n_distinct(subject)
+  )
+
+haplogroup %<>%
+  mutate(
+    hap = fct_collapse(
+      haplogroup,
+      L = paste0("L", 0:6),
+      M = c("M", paste0("M", 1:9), 
+            "Q", paste0("Q", 1:3), 
+            "C", paste0("C", 1:7), 
+            "Z", paste0("Z", 1:3), 
+            "E", "E1",  
+            "G", paste0("G", 1:4), 
+            "D", paste0("D", 1:6)
+            ),
+      N = c("N", "N1", "N2", "N5", "N9", 
+            "Y", "Y1", "Y2",  
+            "A", "A+", paste0("A", 1:5), 
+            "S", "S3",   
+            "I", paste0("I", 1:6), 
+            "W", "W1", "W8", paste0("W", 3:6), 
+            "X", paste0("X", 2:4)
+            ),
+      R = c("P", "P1", "P3", "P4", "P5", 
+            "B", paste0("B", 1:6), 
+            paste0("R", 1:9),
+            "F", paste0("F", 1:4) 
+            ),
+      H = c("H", paste0("H", 1:9)
+            ), 
+      R0 = c("R0", "HV",  
+             "V", "V+", paste0("V", 1:9) 
+             ),
+      U = c("U", paste0("U", 1:9), 
+            "K", paste0("K", 1:3)
+            ),
+      JT = c("T", "JT", "T1", "T2", "T3", "J", "J1", "J2")
+      ),
+    hap = as.factor(hap)
+  ) %>%
+  dplyr::select(subject, haplogroup, hap)
+
+table(haplogroup$hap, useNA = "ifany")
+```
+
+# Merge data sets    
+## Coverage and reads data sets  
+```{r analysis_06 merge coverage_reads}
+coverage_reads <- coverage %>%
+  inner_join(
+    reads,
+    by = c("subject", "Run")
+  ) 
+
+coverage_reads %>%  # 199910 observations and 199910 individuals  
+  summarise(
+    n = n_distinct(subject)
+  ) 
+```
+
+## Exclusion data sets  
+* Contamination level >= 0.03  
+* Low coverage  
+* Poor quality  
+  
+```{r analysis_06 merge exc}
+exc <- haplocheck %>%
+  left_join(low_coverage, by = "subject") %>%
+  left_join(., poor_quality, by = "subject") %>%
+  mutate(
+    exc_low_coverage = ifelse(is.na(exc_low_coverage), 0, 1),
+    exc_poor_quality = ifelse(is.na(exc_poor_quality), 0, 1)
+  ) %>%
+  dplyr::select(-Run)
+
+exc %>%  # 199919 observations and 199919 individuals  
+  summarise(
+    n = n_distinct(subject)
+  ) 
+
+# Number of participants to be excluded for any one of the three reasons (n = 2501)
+exc %>%
+  filter(
+    exc_contamination == 1 | exc_low_coverage == 1 | exc_poor_quality == 1
+  ) %>%
+  summarise(
+    n = n_distinct(subject)
+  )
+
+# Contamination >= 0.03
+exc %>%
+  count(exc_contamination == 1)
+
+# Low coverage  
+exc %>%
+  count(exc_low_coverage == 1)
+
+# Poor quality 
+exc %>%
+  count(exc_poor_quality == 1)
+```
+
+## Merge coverage and exclusion data sets  
+* Exclude 1 participant who withdrew consent (ID 2153839)  
+```{r analysis_06 merge cvg_reads_exc}
+# exclusion 1 
+cvg_reads_exc <- coverage_reads %>%
+  left_join(exc, by = "subject") %>%
+  filter(subject != "2153839") 
+
+cvg_reads_exc %>%  # 199909 observations and 199909 individuals  
+  summarise(
+    n = n_distinct(subject)
+  ) 
+
+# exclusion 2 
+cvg_reads_exc %<>%
+  left_join(het, by = "subject")
+
+cvg_reads_exc %>%  # 199909 observations and 199909 individuals  
+  summarise(
+    n = n_distinct(subject)
+  ) 
+```
+
+# Data management  
+```{r analysis_06 new variables}
+cvg_reads_exc %<>%
+  rename(CN = M) %>%
+  # new variables 
+  mutate(
+    lCN = log(CN),
+    het_count = ifelse(is.na(het_count), 0, het_count),
+    het_count_cat = ifelse(is.na(het_count_cat), 0, het_count_cat)
+    ) %>%
+  # exclusion criteria
+  mutate(
+    exc_cn = ifelse(CN <= 40, 1, 0),
+    exc_hc = ifelse(het_count >= 6 & !is.na(het_count), 1, 0)
+  ) %>%
+  # inclusion, exclusion 
+  mutate(
+    inc_exc = case_when(
+      exc_contamination == 1 ~ 1,
+      exc_low_coverage == 1 ~ 2,
+      exc_poor_quality == 1 ~ 3,
+      TRUE ~ 0
+    ),
+    inc_exc = factor(
+      inc_exc,
+      levels = c(0:3),
+      labels = c("Included", "Contaminated", "Low coverage", "Poor quality")
+    )
+  )
+
+table(cvg_reads_exc$inc_exc, useNA = "ifany")
+
+cvg_reads_exc %>%
+  filter(exc_contamination == 0 & exc_low_coverage == 0 & exc_poor_quality == 0) %>%
+  janitor::tabyl(exc_cn, exc_hc)  # 2503 samples for low CN; 34 samples for het_count >= 6 without overlapping 
+
+included <- cvg_reads_exc %>%
+  filter(
+    exc_contamination == 0 & 
+      exc_low_coverage == 0 & 
+      exc_poor_quality == 0 &
+      exc_cn == 0 &
+      exc_hc == 0
+    )
+
+included %>%  # 194871 observations and 194871 individuals  
+  summarise(
+    n = n_distinct(subject)
+  ) 
+```
+
+# Extended data figure 2  
+## Contamination level  
+```{r analysis_06 sfig2a}
+sfig2a <- cvg_reads_exc %>%
+  ggplot() +
+  geom_density(aes(x = level), color = "#005CB2", size = 1.2) +
+  geom_rug(aes(x = level)) +
+  geom_vline(xintercept = 0.03, linetype = "dashed", color = "orange", size = 1.2) +
+  annotate("text", label = ("'Contamination level' >= 0.03"), parse = TRUE, 
+           x = 0.3, y = 500, size = 5, color = "black") + 
+  annotate("text", label = "n = 242 (0.12%)",
+           x = 0.2, y = 460, size = 5, color = "black") +
+  scale_x_continuous("Contamination level",
+                     breaks = c(0, 0.03, 0.25, 0.5, 0.75, 1),
+                     labels = c(0, 0.03, 0.25, 0.5, 0.75, 1),
+                     limits = c(0, 1.01),
+                     expand = c(0.01, 0)) +
+  scale_y_continuous("Density") + 
+  theme_classic() +
+  theme(axis.title = element_text(size = 12, face = "bold"),
+        axis.text = element_text(size = 10))
+sfig2a
+```
+
+## mtDNA-CN distribution  
+```{r analysis_06 sfig2b}
+sfig2b <- cvg_reads_exc %>%
+  ggplot() +
+  geom_density(aes(x = CN), color = "#005CB2", size = 1.2) +
+  geom_rug(aes(x = CN)) +
+  geom_vline(xintercept = 40, linetype = "dashed", color = "#1B9E77", size = 1.2) +
+  scale_x_continuous("Mitochondrial DNA copy number",
+                     breaks = c(0, 40, 50, 100, 150, 200, 250, 300, 350),
+                     labels = c(0, 40, 50, 100, 150, 200, 250, 300, 350),
+                     limits = c(0, 350),
+                     expand = c(0.01, 0)) + 
+  scale_y_continuous("Density") +
+  theme_classic() +
+  theme(axis.title = element_text(size = 12, face = "bold"),
+        axis.text = element_text(size = 10))
+sfig2b
+```
+
+## Coverage and mt copy number 
+```{r analysis_06 sfig2c}
+sfig2c <- cvg_reads_exc %>%
+  mutate(
+    exc_cn = factor(exc_cn, levels = c(1, 0))
+  ) %>%
+  ggplot() +
+  geom_point(aes(x = mcvg, y = gcvg, color = exc_cn), size = 1, alpha = 0.6) +
+  scale_x_continuous("Mitochondrial chromosome coverage") +
+  scale_y_continuous("Genome coverage") +
+  scale_color_manual(name = "mtDNA copy number",
+                     labels = c(expression("" <= 40~ "(n = 3,580)"),
+                                "> 40 (n = 196,330)"),
+                     values = c("#1B9E77", "#005CB2")) +
+  theme_classic() +
+  theme(axis.title = element_text(size = 12, face = "bold"),
+        axis.text = element_text(size = 10),
+        legend.title = element_text(size = 12, face = "bold"),
+        legend.text = element_text(size = 12),
+        legend.position = c(0.85, 0.7),
+        legend.text.align = 0) +
+  guides(colour = guide_legend(override.aes = list(alpha = 1)))
+sfig2c
+```
+
+## Inclusion and exclusion  
+```{r analysis_06 sfig2d}
+sfig2d <- cvg_reads_exc %>%
+  ggplot() +
+  geom_point(aes(x = CN, y = het_count, color = inc_exc), size = 1.2, alpha = 0.8) +
+  geom_vline(xintercept = 40, linetype = "dashed", color = "#1B9E77", size = 1.2) +
+  geom_hline(yintercept = 6, linetype = "dashed", color = "purple", size = 1.2) +
+  scale_x_continuous("Mitochondrial DNA copy number",
+                     breaks = c(0, 40, 50, 100, 150, 200, 250, 300, 350),
+                     labels = c(0, 40, 50, 100, 150, 200, 250, 300, 350),
+                     limits = c(0, 350),
+                     expand = c(0.01, 0)) + 
+  scale_y_continuous("Heteroplasmy count",
+                     breaks = c(0, 6, 25, 50, 75, 100),
+                     labels = c(0, 6, 25, 50, 75, 100)) +
+  scale_color_brewer(name = "",
+                     palette = "RdBu") + 
+  theme_classic() +
+  theme(axis.title = element_text(size = 12, face = "bold"),
+        axis.text = element_text(size = 10),
+        legend.text = element_text(size = 12, face = "bold"),
+        legend.position = c(0.85, 0.7),
+        legend.text.align = 0) +
+  guides(colour = guide_legend(override.aes = list(size = 2, alpha = 1)))
+sfig2d
+```
+
+## Merge sfig2  
+```{r analysis_06 sfig2, fig.height=8, fig.width=12}
+sfig2 <- ggpubr::ggarrange(
+  sfig2a, sfig2b, sfig2c, sfig2d,
+  nrow = 2, ncol = 2,
+  labels = c("a", "b", "c", "d"),
+  align = "hv"
+)
+sfig2
+
+ggsave("ukb_heteroplasmy_outcomes_extended_fig2.tiff", plot = sfig2, width = 12, height = 8) 
+```
+
+# Extended data figure 3  
+```{r analysis_06 sfig3}
+sfig3 <- cvg_reads_exc %>%
+  mutate(
+    het_count = case_when(
+      het_count >= 7 ~ 7,
+      TRUE ~ het_count
+    ),
+    het_count = factor(
+      het_count, 
+      levels = c(0:7),
+      labels = c("0", "1", "2", "3", "4", "5", "6", "7+")
+    )
+  ) %>%
+  ggplot() +
+  geom_histogram(aes(x = CN), alpha = 0.5, binwidth = 2, position = "identity") +
+  scale_x_continuous("Mitochondrial DNA copy number",
+                     breaks = c(0, 50, 100, 150, 200, 250, 300, 350),
+                     labels = c(0, 50, 100, 150, 200, 250, 300, 350),
+                     limits = c(0, 350),
+                     expand = c(0.01, 0)) +
+  scale_y_continuous("Number of participants",
+                     expand = c(0, 0)) +
+  theme_classic() +
+  facet_wrap(vars(het_count), scales = "free")
+sfig3
+
+ggsave("ukb_heteroplasmy_outcomes_extended_fig3.tiff", plot = sfig3, width = 9, height = 6) 
+```
