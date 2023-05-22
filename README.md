@@ -16,3 +16,7 @@ MitoHPC: https://github.com/ArkingLab/MitoHPC
 **phewas.mtscore.R** & **phewas_functions.R**: R codes for generating Figure 8a
 
 **ukb_heteroplasmy_phesant_heatmap.R**: R codes for generating Figure 8b
+
+**Input**: Input files used in this analysis
+
+**demo.rds**: demo.rds file
