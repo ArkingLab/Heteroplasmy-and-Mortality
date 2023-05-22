@@ -1,7 +1,7 @@
 ---
-title: "UKB - Heteroplasmy and mortality - data cleaning"
-subtitle: "004 - mito score and mt haplogroups"
-author: "Yun Soo Hong"
+title: "Heteroplasmy - health outcomes - data cleaning"
+subtitle: "008 - mito score and mt haplotypes excluding possible NUMTs"
+author: "Eliseo Guallar and Yun Soo Hong"
 date: '`r format(Sys.Date(), "%B %d, %Y")`'
 output: 
   html_document:
@@ -19,7 +19,7 @@ fontsize: 11pt
 # Set up  
 
 ## Program description  
-* This program reads in several data sets to generate exposure variables (mitoscore, mitoscore sum, heteroplasmy count, nonsense mutation, MMC score, and APOGEE score) from the raw output of `mutect2` (`all_variants_het_download_allfilter_0805.txt`). In addition, we use mt haplotype data downloaded from the shared OneDrive folder on June 14, 2022 (`UKB_mtHaplotypes.txt`), and haplogroups from `mutect2.haplogroup1_200k.tab`, and mtDNA-CN data from `WGS_CN.txt`. We first need to apply the exclusion criteria to the raw output. The exclusion criteria are: 1) contamination, low quality, multiple variants predicted to be NUMTs, 2) mtDNA-CN <= 40, and 3) heteroplasmy count > 5.  
+* This program reads in several data sets to generate exposure variables (mitoscore, mitoscore sum, heteroplasmy count, nonsense mutation, MMC score, and APOGEE score) from the raw output of `mutect2` (`all_variants_het_download_allfilter_0805.txt`). In addition, we use mt haplotype data downloaded from the shared OneDrive folder on June 14, 2022 (`UKB_mtHaplotypes.txt`), and haplogroups from `mutect2.haplogroup1_200k.tab`, and mtDNA-CN data from `WGS_CN.txt`. We first need to apply the exclusion criteria to the raw output. The exclusion criteria are: 1) contamination, low quality, multiple variants predicted to be NUMTs, 2) potential NUMTs (filter_numt == "numt"), 3) mtDNA-CN <= 40, and 4) heteroplasmy count > 5. 
 * To apply exclusion criteria, we need to read in other data sets  
   * `mutect2.suspicious.tab` -> `suspect`  
   * `mutect2.05.suspicious.tab1` -> `suspect2`    
@@ -36,12 +36,12 @@ fontsize: 11pt
   * Step 5: Save data sets    
 
 ## Versions of R and packages  
-```{r clean_04 set up, include = FALSE}
+```{r clean_11 set up, include = FALSE}
 knitr::opts_chunk$set(echo = TRUE)
 ```
 
 ## Load libraries
-```{r clean_04 load libraries, echo = TRUE, message = FALSE}
+```{r clean_11 load libraries, echo = TRUE, message = FALSE}
 library(tidyverse)
 library(magrittr)
 library(lubridate)
@@ -51,7 +51,7 @@ library(skimr)
 ```
 
 ## Print out settings  
-```{r clean_04 print settings}
+```{r clean_11 print settings}
 options(tibble.print_max = 100)
 options(pillar.sigfig = 5)
 ```
@@ -59,7 +59,7 @@ options(pillar.sigfig = 5)
 # Load data  
 ## Raw output from the Mutect2  
 
-```{r clean_04 load data raw}
+```{r clean_11 load data raw}
 raw <- fread("../../data/all_variants_het_download_allfilter_0805.txt") %>%
   as.data.frame()
 
@@ -89,16 +89,11 @@ raw %<>%  # indicator variable for those missing `mito_lc_score`
     miss_mtscore_sum = sum(miss_mtscore)   # total number of missing per person  
   ) %>%
   ungroup()
-
-raw %>%
-  filter(miss_mtscore_max == 1) %>%
-  dplyr::select(eid, mito_lc_score, miss_mtscore, miss_mtscore_max, miss_mtscore_sum) %>%
-  arrange(eid)
 ```
 
 ## Mitochondrial haplotype  
 
-```{r clean_04 load data mt_haplotype}
+```{r clean_11 load data mt_haplotype}
 mt_haplotype <- fread("../../data/UKB_mtHaplotypes.txt") %>%
   as.data.frame()
 
@@ -115,7 +110,7 @@ mt_haplotype %>%  # n = 381455 observations (381455 participants)
 
 ## Mitochondrial haplogroups  
 
-```{r clean_04 load data mt_haplogroup}
+```{r clean_11 load data mt_haplogroup}
 haplogroup <- fread("../../data/mutect2.haplogroup1_200k.tab") %>%
   as.data.frame()
 haplogroup %<>%
@@ -137,7 +132,7 @@ haplogroup %>%  # n = 199919 observations (199919 participants)
 * `exclude`: includes data on potentially contaminated samples  
 * `samples`: includes the list of participants included in the WGS data  
 
-```{r clean_04 load exclusion list}
+```{r clean_11 load exclusion list}
 # suspect 
 suspect <- read_table(
   "../../data/sample.exclusions/mutect2.suspicious.tab",
@@ -160,7 +155,7 @@ suspect %>%  # n = 1151 observations (1132 participants)
 
 # suspect2
 suspect2 <- read_table(
-  "../../data/sample.exclusions/mutect2.05.suspicious.tab1",
+  "../../posted/data/sample.exclusions/mutect2.05.suspicious.tab1",
   col_names = FALSE
   ) %>%
   mutate(
@@ -183,7 +178,7 @@ suspect2 %>%  # n = 3400 observations (1439 participants)
 
 # exclude 
 exclude <- read_table(
-  "../../data/sample.exclusions/exclude.list_May2022"
+  "../../posted/data/sample.exclusions/exclude.list_May2022"
   ) %>%
   rename(
     eid = subject
@@ -204,7 +199,7 @@ exclude %>%  # n = 242 observations (242 participants)
 
 # samples  
 samples <- read_table(
-  "../../data/sample.exclusions/200k_samples.txt"
+  "../../posted/data/sample.exclusions/200k_samples.txt"
   ) %>%
   rename(
     eid = sample
@@ -222,7 +217,7 @@ samples %>%  # n = 199919 observations (199919 participants)
 ## mtDNA-CN data set  
 * Here, we use `WGS_CN.txt` generated by Wen (per Stephanie's codes)  
 
-```{r clean_04 load mtdnacn}
+```{r clean_11 load mtdnacn}
 mtdnacn <- fread("../../data/WGS_CN.txt") %>%
   as.data.frame() %>%
   rename(
@@ -239,11 +234,12 @@ mtdnacn %>%  # n = 199945 observations (199945 participants)
   )
 ```
 
-# Exclusion criteria #: Identify bad samples to be removed   
+# Exclusion criteria  
 * This section implements Dan's codes  
 * With these data sets, we create a list of participants who will be removed from analysis. There are participants who may be excluded for more than 1 reason, but since we only need a list of participants at this point, we will keep only the vector of participants who meet any of the exclusion criteria #1 (`exclude.list`).  
 
-```{r clean_04 exclude list}
+## Identify bad samples to be removed  
+```{r clean_11 exclude list}
 # list of participants who need to be excluded  
 exclude_list <- suspect %>%
   full_join(suspect2, by = "eid") %>%
@@ -269,25 +265,28 @@ good.samples %>%  # n = 197418 observations (197418 participants)
   )
 ```
 
-# Apply exclusion #1
-* Creates a subset of data (`het`) of those who pass the exclusion criteria #1.  
+# Apply exclusion #1  
+## Exclusion criteria #1    
+```{r clean_11 apply exclusion}
+table(raw$filter_numt, useNA = "ifany")
 
-```{r clean_04 apply exclusion}
 het <- raw %>%
-  filter(!(eid %in% exclude.list))
+  filter(
+    !(eid %in% exclude.list)
+    )
 
-het %>%  # n = 75841 observations (60314 participants)  
+het %>%  # n = 75841 observations (60314 participants)    
   summarise(
     nrow = n(),
     n = n_distinct(eid)
   )
 ```
 
-# Data management after exclusion #1   
-## Remove all missing  
+# Data management  
+## Remove missing  
 * Replace missing values with 0  
 
-```{r clean_04 rm missing}
+```{r clean_11 rm missing}
 het %<>%
   mutate_all(
     .,
@@ -298,7 +297,7 @@ summary(het$mito_lc_score)
 ```
 
 ## Type of mutation  
-```{r clean_04 variable mutation}
+```{r clean_11 variable mutation}
 het %<>%
   mutate(
     mutation_nonsynonymous = 
@@ -326,7 +325,7 @@ het %>%  # n = 86
 * In most cases, the number of rows per person is the number of heteroplasmies per person  
 * However, in the case where `mito_lc_score` was missing (in 23 observations in 18 participants), this is not counted as a heteroplasmic site and, therefore, the number of rows with missing `mito_lc_score` is subtracted from the number of rows per person to calculate the heteroplasmy count.  
 
-```{r clean_04 variable het_count}
+```{r clean_11 variable het_count}
 # Heteroplasmy count per person  
 het %<>%
   group_by(eid) %>%
@@ -353,7 +352,7 @@ table(het$het_count, het$het_count_cat, useNA = "ifany")
 ```
 
 ## Mito score sum (MSS)
-```{r clean_04 variable mss}
+```{r clean_11 variable mss}
 # Generate sum of mito_score using mito_lc_score and add to the original data frame
 het %<>%
   group_by(eid) %>%
@@ -395,14 +394,9 @@ het %<>%
 het %<>%
   group_by(eid) %>%
   mutate(
-    mutation_stop_any = max(mutation_stop),
-    mutation_nonsyn_any = max(mutation_nonsynonymous),
-    mutation_syn_any = min(mutation_nonsynonymous)
+    mutation_stop_any = max(mutation_stop)
   ) %>%
-  ungroup() %>%
-  mutate(
-    mutation_syn_any = as.character(1 - as.numeric(mutation_syn_any))
-  )
+  ungroup()
 ```
 
 # Exclusion criteria #2 and #3  
@@ -410,7 +404,7 @@ het %<>%
 * This data set (`mtdnacn`) from `WGS_CN.txt` includes 1 participant who withdrew consent during the study period (`eid` == "2153839")  
 * This person is removed from the combined data set  
 
-```{r clean_04 het_cn}
+```{r clean_11 het_cn}
 het_cn <- het %>%
   full_join(mtdnacn, by = "eid") %>%
   filter((eid %in% good.samples$eid)) %>%
@@ -418,7 +412,7 @@ het_cn <- het %>%
   arrange(eid) %>%
   filter(eid != 2153839)  # remove 1 person without consent  
 
-het_cn %>%  # n = 212937 observations (197410 participants)  
+het_cn %>%  # n = 208332 observations (197410 participants)  
   summarise(
     nrow = n(),
     n = n_distinct(eid)
@@ -426,7 +420,7 @@ het_cn %>%  # n = 212937 observations (197410 participants)
 ```
 
 ## Exclusion by mtDNA-CN and heteroplasmy count  
-```{r clean_04 exc cn het_count}
+```{r clean_11 exc cn het_count}
 het_cn %<>%
   mutate(
     exc_cn = ifelse(CN <= 40, 1, 0),
@@ -456,8 +450,23 @@ het_cn_all %>%  # n = 209830 observations (194871 participants)
   )
 ```
 
-# A random sample selection   
-```{r clean_04 select}
+## Exclude any potential NUMTs  
+* `filter_numt != "numt" | is.na(filter_numt)`  
+```{r clean_11 exc filter_numt}
+het_cn_all %<>%
+  filter(filter_numt != "numt" | is.na(filter_numt))
+
+het_cn_all %>%  # n = 197108 observations (186551 participants)
+  summarise(
+    nrow = n(),
+    n = n_distinct(eid)
+  )
+
+table(het_cn_all$filter_numt, useNA = "ifany")
+```
+
+# Selection from the data set  
+```{r clean_11 select}
 set.seed(20220913)
 
 # Random selection 
@@ -475,7 +484,7 @@ het_cn_max <- het_cn_all %>%
 
 # Merge data sets  
 ## Merge between heteroplasmy related data  
-```{r clean_04 merge mito}
+```{r clean_11 merge mito}
 mito <- het_cn_mono %>%
   dplyr::select(-Haplogroup) %>%  # as we will be using a separate data set for haplogroup information 
   left_join(., haplogroup, by = "eid") %>%
@@ -489,12 +498,12 @@ mito %>%  # ends with 194871 participants and the same number of observations
     )
 ```
 
-# Data management after exclusions #2 and #3   
-## Missing values to 0  
+# Data management  
+## Missing mitoscores to 0  
 * Dan's codes assign -1 to `Freq_Homo` because 0 is relative to heteroplasmy.    
 * Not sure where the 9 missing values of mtDNA-CN is coming from??  
 
-```{r clean_04 data mito}
+```{r clean_11 data mito}
 mito %<>%
   mutate(
     across(
@@ -548,7 +557,7 @@ mito %<>%
     mutation_stop = as.numeric(mutation_stop),
     mutation_stop_any = as.numeric(mutation_stop_any)
   ) 
-
+  
 # Mitoscore 
 summary(mito$mito_lc_score)
 
@@ -559,8 +568,30 @@ summary(mito$mito_score_sum_lc)
 table(mito$het_count, useNA = "ifany")
 ```
 
+## Mitoscore and mitoscore sum (MSS)  
+```{r clean_11 mitoscore}
+summary(mito$mito_lc_score)
+mito %>%
+  ggplot() +
+  geom_histogram(aes(x = mito_lc_score))
+
+# Mitoscore sum (MSS)
+summary(mito$mito_score_sum_lc)
+mito %>%
+  ggplot() +
+  geom_histogram(aes(x = mito_score_sum_lc))
+```
+
+## Heteroplasmy count  
+```{r clean_11 het_count}
+table(mito$het_count, useNA = "ifany")
+mito %>%
+  ggplot() +
+  geom_bar(aes(x = het_count))
+```
+
 ## Mitochondrial haplotypes  
-```{r clean_04 mt_haplotype}
+```{r clean_11 mt_haplotype}
 table(mito$haplo, useNA = "ifany")
 
 mito %<>%
@@ -583,8 +614,9 @@ table(mito$haplo, useNA = "ifany")
 
 ## Mitochondrial haplogroups  
 * Revised codes using Stephanie's codes and modified to collapse the haplogrous into L, M, N, R, R0, U, JT, and H.    
+* There are discrepancies but to be consistent with Stephanie, I will use the haplogroups generated from `mutect2.haplogroup1_200k.tab`.  
 
-```{r clean_04 mt_haplogroup}
+```{r clean_11 mt_haplogroup}
 mito %<>%
   mutate(
     hap = fct_collapse(
@@ -629,14 +661,11 @@ mito %<>%
 ```
 
 # Save data set  
-```{r clean_04 save}
+```{r clean_11 save}
 mito %>%
   skimr::skim_without_charts()
 
 mito %>%
-  saveRDS("ukb_heteroplasmy_mortality_04_mito.rds")
+  saveRDS("ukb_heteroplasmy_mortality_11_numt.rds")
 ```
 
-
-
-  

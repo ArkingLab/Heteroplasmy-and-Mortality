@@ -794,6 +794,115 @@ cancer_long %<>%
   dplyr::select(-c(cancer_dx_male, cancer_date_male, nrow_male, cancer_fdate_male, cancer_yn_male))
 ```
 
+### Prostate cancer   
+* ICD10 C61, ICD9 185  
+```{r male_prostate}
+# diagnosis 
+cancer_long %<>%
+  mutate(
+    cancer_dx_male_prostate = 
+      case_when(
+        grepl("C61", cancer_icd10) ~ 1,
+        grepl("185", cancer_icd9) ~ 1,
+        TRUE ~ 0
+      )
+  )
+
+table(cancer_long$cancer_dx_male_prostate, useNA = "ifany")
+
+# date of diagnosis  
+cancer_long %<>%
+  mutate(
+    cancer_date_male_prostate = as.Date(ifelse(cancer_dx_male_prostate == 1, cancer_date, NA), origin = "1970-01-01")
+  ) %>%
+  arrange(eid, cancer_date_male_prostate) %>%
+  # the first date of diagnosis variable (`cancer_fdate_male_prostate`)
+  group_by(eid) %>%
+  mutate(nrow_male_prostate = row_number(),
+         cancer_fdate_male_prostate = as.Date(ifelse(nrow_male_prostate == 1, cancer_date_male_prostate, NA), origin = "1970-01-01")) %>%
+  ungroup()
+
+# once diagnosed with cancer, the variable for yn column (`caner_yn_*`) is replaced with 1 ("yes")
+cancer_long %<>%
+  group_by(eid) %>%
+  mutate(
+    cancer_yn_male_prostate =
+      max(cancer_dx_male_prostate)
+  ) %>%
+  ungroup() 
+
+table(cancer_long$cancer_dx_male_prostate, useNA = "ifany")
+table(cancer_long$cancer_yn_male_prostate, useNA = "ifany")
+
+# save the object for prostate cancer
+cancer_male_prostate <- cancer_long %>%
+  filter(nrow_male_prostate == 1) %>%
+  dplyr::select(
+    eid, cancer_dx_male_prostate, cancer_date_male_prostate, cancer_age 
+    ) %>%
+  rename(cancer_age_male_prostate = cancer_age)
+
+# remove variables related to prostate cancer from `cancer_long` data set  
+cancer_long %<>%
+  dplyr::select(-c(cancer_dx_male_prostate, cancer_date_male_prostate, nrow_male_prostate, cancer_fdate_male_prostate, cancer_yn_male_prostate))
+```
+
+## Malignant neoplasms of urinary tract  
+* ICD10 C64-C68, ICD9 188-189  
+```{r urinary}
+urinary_icd10 <- c("C64", "C65", "C66", "C67", "C68")
+urinary_icd9 <- c("188", "189")
+
+# diagnosis 
+cancer_long %<>%
+  mutate(
+    cancer_dx_urinary = 
+      case_when(
+        grepl(paste(urinary_icd10, collapse = "|"), cancer_icd10) ~ 1, 
+        grepl(paste(urinary_icd9, collapse = "|"), cancer_icd9) ~ 1,
+        TRUE ~ 0
+      )
+  )
+
+table(cancer_long$cancer_dx_urinary, useNA = "ifany")
+
+# date of diagnosis  
+cancer_long %<>%
+  mutate(
+    cancer_date_urinary = as.Date(ifelse(cancer_dx_urinary == 1, cancer_date, NA), origin = "1970-01-01")
+  ) %>%
+  arrange(eid, cancer_date_urinary) %>%
+  # the first date of diagnosis variable (`cancer_fdate_urinary`)
+  group_by(eid) %>%
+  mutate(nrow_urinary = row_number(),
+         cancer_fdate_urinary = as.Date(ifelse(nrow_urinary == 1, cancer_date_urinary, NA), origin = "1970-01-01")) %>%
+  ungroup()
+
+# once diagnosed with cancer, the variable for yn column (`caner_yn_*`) is replaced with 1 ("yes")
+cancer_long %<>%
+  group_by(eid) %>%
+  mutate(
+    cancer_yn_urinary =
+      max(cancer_dx_urinary)
+  ) %>%
+  ungroup() 
+
+table(cancer_long$cancer_dx_urinary, useNA = "ifany")
+table(cancer_long$cancer_yn_urinary, useNA = "ifany")
+
+# save the object for urinary cancers
+cancer_urinary <- cancer_long %>%
+  filter(nrow_urinary == 1) %>%
+  dplyr::select(
+    eid, cancer_dx_urinary, cancer_date_urinary, cancer_age 
+    ) %>%
+  rename(cancer_age_urinary = cancer_age)
+
+# remove variables related to urinary cancers from `cancer_long` data set  
+cancer_long %<>%
+  dplyr::select(-c(cancer_dx_urinary, cancer_date_urinary, nrow_urinary, cancer_fdate_urinary, cancer_yn_urinary))
+```
+
 ## Malignant neoplasms of urinary tract  
 * ICD10 C64-C68, ICD9 188-189  
 ```{r clean_03 urinary}
@@ -1414,6 +1523,7 @@ cancer_wide <- cancer_neoplasm %>%
   left_join(., cancer_breast, by = "eid") %>%
   left_join(., cancer_female, by = "eid") %>%
   left_join(., cancer_male, by = "eid") %>%
+  left_join(., cancer_male_prostate, by = "eid") %>%  
   left_join(., cancer_urinary, by = "eid") %>%
   left_join(., cancer_cns, by = "eid") %>%
   left_join(., cancer_endo, by = "eid") %>%
