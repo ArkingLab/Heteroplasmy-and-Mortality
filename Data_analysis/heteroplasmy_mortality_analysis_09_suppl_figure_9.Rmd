@@ -1,0 +1,143 @@
+---
+title: "Heteroplasmy and mortality - data analysis"
+subtitle: "Sensitivity analysis - plot by VAF and CN"
+author: "Yun Soo Hong"
+date: '`r format(Sys.Date(), "%B %d, %Y")`'
+output: 
+  html_document:
+    toc: true
+    toc_float: 
+      collapsed: false
+      smooth_scroll: false
+    pandoc_args: [
+    "--number-sections",
+    "--number-offset=0"
+    ]
+fontsize: 11pt
+---
+
+# Set up  
+
+## Program description  
+* This program reads in the data sets.     
+  * Step 1: Read in data 
+    * `heteroplasmy_outcome_figure_vaf_mortality_2023_02_01.xlsx`  
+    * `heteroplasmy_outcome_figure_vaf_mortality_cancer_2023_02_01.xlsx`  
+  * Step 2: Forest plots    
+
+## Versions of R and packages  
+```{r analysis_10 set up, include = FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Load libraries
+```{r analysis_10 load libraries, echo = TRUE, message = FALSE}
+library(tidyverse)
+library(magrittr)
+library(lubridate)
+library(data.table)
+library(rms)
+library(RColorBrewer)
+library(forestploter)
+library(ggforestplot)
+```
+
+## Print out settings  
+```{r analysis_10 print settings}
+options(tibble.print_max = 100)
+options(pillar.sigfig = 5)
+```
+
+# Load data 
+## het_count data  
+```{r analysis_10 load het_count data}
+dt <- readxl::read_excel(
+  "../input/heteroplasmy_outcome_figure_vaf_mortality_2023_02_01.xlsx", 1
+) %>%
+  as.data.frame() %>%
+  mutate(
+    vaf = factor(
+      vaf, 
+      levels = c(60, 10, 5, 3),
+      labels = c("10% and \n mtDNA-CN > 60", "10%  and \n mtDNA-CN > 40", "5% and \n mtDNA-CN > 40", "3%  and \n mtDNA-CN > 40")
+      ),
+    coef = as.numeric(coef), 
+    lci = as.numeric(lci),
+    uci = as.numeric(uci),
+    lncoef = log(coef),
+    se = as.numeric(se)
+  ) %>%
+  rename(
+    VAF = vaf
+  ) %>%
+  filter(
+    cod != "Infection" & cod != "Endocrine disorders"
+  )
+dt
+
+dt_cancer <- readxl::read_excel(
+  "../input/heteroplasmy_outcome_figure_vaf_mortality_cancer_2023_02_01.xlsx", 1
+) %>%
+  as.data.frame() %>%
+  mutate(
+    cancer = case_when(
+      cancer == "Lymphoma" ~ "  Lymphoma",
+      cancer == "Leukemia" ~ "  Leukemia",
+      TRUE ~ cancer
+    )
+  ) %>%
+  mutate(
+    vaf = factor(
+      vaf, 
+      levels = c(60, 10, 5, 3),
+      labels = c("10% and \n mtDNA-CN > 60", "10%  and \n mtDNA-CN > 40", "5% and \n mtDNA-CN > 40", "3%  and \n mtDNA-CN > 40")
+      ),
+    coef = as.numeric(coef), 
+    lci = as.numeric(lci),
+    uci = as.numeric(uci),
+    lncoef = log(coef),
+    se = as.numeric(se)
+  ) %>%
+  rename(
+    VAF = vaf
+  ) %>%
+  filter(
+    cancer != "Skin"
+  )
+dt_cancer
+```
+
+# Plots    
+## Cause of death    
+```{r analysis_10 ma hc overall}
+cod <- ggforestplot::forestplot(
+  df = dt, 
+  name = cod, 
+  estimate = lncoef, 
+  se = se,
+  logodds = TRUE,
+  colour = VAF,
+  xlab = "HR (95% CI) for 1-unit increase in MSS"
+) 
+```
+
+## Cause of death, cancer  
+```{r analysis_10 ma hc combined}
+cancer <- ggforestplot::forestplot(
+  df = dt_cancer, 
+  name = cancer, 
+  estimate = lncoef, 
+  se = se,
+  logodds = TRUE,
+  colour = VAF,
+  xlab = "HR (95% CI) for 1-unit increase in MSS"
+) 
+```
+
+## Combine  
+```{r, fig.height = 8, fig.width = 7}
+ext_fig9 <- ggpubr::ggarrange(cod, cancer, labels = c("a", "b"), nrow = 2)
+ext_fig9
+ggsave("ukb_heteroplasmy_outcomes_extended_fig9.tiff", ext_fig9)
+```
+
